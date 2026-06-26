@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "woow-odoo-mcp-server"
+version = "1.0.0"
+description = "Odoo MCP Admin Bundle — Web GUI + MCP Proxy + Process Manager for Odoo MCP Server"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "WOOWTECH", email = "dev@woowtech.io"},
+]
+keywords = ["odoo", "mcp", "admin", "fastapi", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]",
+    "httpx",
+    "pyjwt>=2.9",
+    "python-multipart",
+    "odoo-mcp-server",
+    "mcp[cli]",
+]
+
+[project.urls]
+Homepage = "https://github.com/WOOWTECH/woow_odoo_mcp_server"
+Documentation = "https://github.com/WOOWTECH/woow_odoo_mcp_server#readme"
+Repository = "https://github.com/WOOWTECH/woow_odoo_mcp_server"
+Issues = "https://github.com/WOOWTECH/woow_odoo_mcp_server/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mcp_admin_core", "odoo_mcp_admin"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "ruff",
+]

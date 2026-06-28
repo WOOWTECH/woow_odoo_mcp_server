@@ -10,8 +10,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
-from kubernetes import client, config
-from kubernetes.client.rest import ApiException
+try:  # 'kubernetes' 為選用相依（僅 k8s 功能需要），缺少時不應讓 import 直接失敗
+    from kubernetes import client, config
+    from kubernetes.client.rest import ApiException
+
+    _KUBERNETES_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    client = None  # type: ignore[assignment]
+    config = None  # type: ignore[assignment]
+    ApiException = Exception  # type: ignore[misc,assignment]
+    _KUBERNETES_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +40,11 @@ class K8sClient:
     """
 
     def __init__(self, namespace: str | None = None) -> None:
+        if not _KUBERNETES_AVAILABLE:
+            raise RuntimeError(
+                "使用 K8sClient 需要安裝 'kubernetes' 套件："
+                "pip install kubernetes（或安裝 mcp-admin-core 的 [k8s] extra）。"
+            )
         self._load_config()
         self.namespace = namespace or self._detect_namespace()
         self.core = client.CoreV1Api()

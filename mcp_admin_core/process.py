@@ -11,11 +11,16 @@ import asyncio
 import logging
 import os
 import signal
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from .config import get_config_store
 
 logger = logging.getLogger(__name__)
+
+# Path to the cross-session token store patch
+_PATCH_SCRIPT = Path(__file__).resolve().parent.parent / "patches" / "fix_cross_session_token_store.py"
 
 
 class McpProcessManager:
@@ -56,6 +61,9 @@ class McpProcessManager:
             env[key.upper()] = str(value)
         for key, value in env_overrides.items():
             env[key] = str(value)
+
+        # Apply cross-session token store patch before starting
+        self._ensure_token_store_patch()
 
         cmd = [command] + args
         logger.info("Starting MCP server: %s", " ".join(cmd))
@@ -146,6 +154,30 @@ class McpProcessManager:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ensure_token_store_patch() -> None:
+        """Apply the cross-session token store patch if not already applied.
+
+        The MCP SDK creates a fresh AppContext per HTTP session, isolating
+        write approval tokens.  This patch makes the token store global so
+        validate_write and execute_approved_write work across sessions.
+        """
+        if not _PATCH_SCRIPT.exists():
+            return
+        try:
+            result = subprocess.run(
+                ["python3", str(_PATCH_SCRIPT)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            for line in (result.stdout or "").splitlines():
+                logger.info(line)
+            if result.returncode != 0:
+                logger.warning("Token store patch failed: %s", result.stderr)
+        except Exception as exc:
+            logger.warning("Could not apply token store patch: %s", exc)
 
     async def _drain_logs(self) -> None:
         """Read stdout/stderr from the subprocess and log it."""

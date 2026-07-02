@@ -23,6 +23,10 @@ WORKDIR /app
 # Install Odoo MCP server + SSE transport support
 RUN pip install --no-cache-dir odoo-mcp-server "mcp[cli]"
 
+# Patch: fix cross-session token store (validate_write/execute_approved_write)
+COPY patches/ /app/patches/
+RUN python /app/patches/fix_cross_session_token_store.py
+
 # Install the unified package (core + odoo admin)
 COPY pyproject.toml /tmp/pkg/
 COPY mcp_admin_core/ /tmp/pkg/mcp_admin_core/

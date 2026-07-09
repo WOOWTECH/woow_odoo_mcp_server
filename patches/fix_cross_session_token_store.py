@@ -17,6 +17,21 @@ Replace the per-instance ``write_approvals`` dict with a module-level
 singleton so every ``AppContext`` instance shares the same token store
 within one process.
 
+IMPORTANT — Deployment
+----------------------
+This patch MUST run BEFORE the MCP server process imports ``odoo_mcp``.
+Using a Kubernetes ``lifecycle.postStart`` hook does NOT work because the
+main process (``odoo-mcp``) has already imported the module by the time
+postStart executes — the patched ``default_factory`` is never seen.
+
+Correct approach (command wrapper)::
+
+    command: ["sh", "-c"]
+    args: ["python3 /patches/fix_cross_session_token_store.py && exec odoo-mcp --transport streamable-http ..."]
+
+This ensures the patch modifies the .py file on disk and clears __pycache__
+BEFORE the Python process starts and imports the module.
+
 Usage
 -----
 Run once after ``pip install odoo-mcp-server``::
@@ -36,9 +51,7 @@ import sys
 def find_server_core() -> str | None:
     """Locate server_core.py inside the installed odoo_mcp package."""
     patterns = [
-        # Standard pip install location
         os.path.join(sys.prefix, "lib", "python*", "site-packages", "odoo_mcp", "server_core.py"),
-        # Editable / development install
         os.path.join(os.path.dirname(__file__), "..", "src", "odoo_mcp", "server_core.py"),
     ]
     for pattern in patterns:
@@ -53,51 +66,58 @@ def patch(filepath: str) -> bool:
     with open(filepath) as f:
         content = f.read()
 
-    if "_GLOBAL_WRITE_APPROVALS" in content:
+    if "_GLOBAL_WRITE_APPROVALS" in content and "lambda: _GLOBAL_WRITE_APPROVALS" in content:
         print(f"[patch] Already applied to {filepath}")
         return False
 
+    changed = False
+
     # 1. Add module-level dict after WRITE_APPROVAL_TTL_SECONDS
-    old_ttl = "WRITE_APPROVAL_TTL_SECONDS = 10 * 60"
-    new_ttl = (
-        "WRITE_APPROVAL_TTL_SECONDS = 10 * 60\n"
-        "\n"
-        "# PATCH(woowtech): process-global token store shared across MCP sessions.\n"
-        "# Without this, validate_write and execute_approved_write fail when\n"
-        "# they land in different HTTP sessions (each gets its own AppContext).\n"
-        "_GLOBAL_WRITE_APPROVALS: Dict[str, Dict[str, Any]] = {}\n"
-    )
-    if old_ttl not in content:
-        print(f"[patch] ERROR: cannot find TTL constant in {filepath}", file=sys.stderr)
-        return False
-    content = content.replace(old_ttl, new_ttl, 1)
+    if "_GLOBAL_WRITE_APPROVALS" not in content:
+        old_ttl = "WRITE_APPROVAL_TTL_SECONDS = 10 * 60"
+        new_ttl = (
+            "WRITE_APPROVAL_TTL_SECONDS = 10 * 60\n"
+            "\n"
+            "# PATCH(woowtech): process-global token store shared across MCP sessions.\n"
+            "# Without this, validate_write and execute_approved_write fail when\n"
+            "# they land in different HTTP sessions (each gets its own AppContext).\n"
+            "_GLOBAL_WRITE_APPROVALS: Dict[str, Dict[str, Any]] = {}\n"
+        )
+        if old_ttl not in content:
+            print(f"[patch] ERROR: cannot find TTL constant in {filepath}", file=sys.stderr)
+            return False
+        content = content.replace(old_ttl, new_ttl, 1)
+        changed = True
 
     # 2. Point AppContext.write_approvals to the global dict
-    old_field = "    write_approvals: Dict[str, Dict[str, Any]] = field(default_factory=dict)"
-    new_field = "    write_approvals: Dict[str, Dict[str, Any]] = field(default_factory=lambda: _GLOBAL_WRITE_APPROVALS)"
-    if old_field not in content:
-        print(f"[patch] ERROR: cannot find write_approvals field in {filepath}", file=sys.stderr)
-        return False
-    content = content.replace(old_field, new_field, 1)
+    if "lambda: _GLOBAL_WRITE_APPROVALS" not in content:
+        old_field = "    write_approvals: Dict[str, Dict[str, Any]] = field(default_factory=dict)"
+        new_field = "    write_approvals: Dict[str, Dict[str, Any]] = field(default_factory=lambda: _GLOBAL_WRITE_APPROVALS)"
+        if old_field not in content:
+            print(f"[patch] ERROR: cannot find write_approvals field in {filepath}", file=sys.stderr)
+            return False
+        content = content.replace(old_field, new_field, 1)
+        changed = True
 
-    with open(filepath, "w") as f:
-        f.write(content)
+    if changed:
+        with open(filepath, "w") as f:
+            f.write(content)
 
-    # 3. Remove .pyc cache so Python reads the patched source
-    cache_dir = os.path.join(os.path.dirname(filepath), "__pycache__")
-    if os.path.isdir(cache_dir):
-        for pyc in glob.glob(os.path.join(cache_dir, "server_core*.pyc")):
-            os.remove(pyc)
-            print(f"[patch] Removed cache: {pyc}")
+        # 3. Remove .pyc cache so Python reads the patched source
+        cache_dir = os.path.join(os.path.dirname(filepath), "__pycache__")
+        if os.path.isdir(cache_dir):
+            for pyc in glob.glob(os.path.join(cache_dir, "server_core*.pyc")):
+                os.remove(pyc)
+                print(f"[patch] Removed cache: {pyc}")
 
-    # 4. Verify
-    with open(filepath) as f:
-        patched = f.read()
-    assert "_GLOBAL_WRITE_APPROVALS" in patched, "Global dict not found after patch"
-    assert "lambda: _GLOBAL_WRITE_APPROVALS" in patched, "Factory not updated after patch"
+        # 4. Verify
+        with open(filepath) as f:
+            patched = f.read()
+        assert "_GLOBAL_WRITE_APPROVALS" in patched, "Global dict not found after patch"
+        assert "lambda: _GLOBAL_WRITE_APPROVALS" in patched, "Factory not updated after patch"
 
-    print(f"[patch] Successfully applied to {filepath}")
-    return True
+        print(f"[patch] Successfully applied to {filepath}")
+    return changed
 
 
 def main() -> int:

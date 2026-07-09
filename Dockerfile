@@ -20,15 +20,17 @@ RUN cd frontend && npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# Install Odoo MCP server + SSE transport support
-RUN pip install --no-cache-dir odoo-mcp-server "mcp[cli]"
+# Install Odoo MCP server (odoo-mcp = tuanle96's full version with 39 tools)
+RUN pip install --no-cache-dir odoo-mcp "mcp[cli]"
 
-# Patch: fix cross-session token store (validate_write/execute_approved_write)
+# Copy and apply patches (run at build time + re-applied at runtime by process manager)
 COPY patches/ /app/patches/
-RUN python /app/patches/fix_cross_session_token_store.py
+RUN python /app/patches/fix_cross_session_token_store.py && \
+    python /app/patches/fix_direct_writes.py
 
 # Install the unified package (core + odoo admin)
 COPY pyproject.toml /tmp/pkg/
+COPY README.md /tmp/pkg/
 COPY mcp_admin_core/ /tmp/pkg/mcp_admin_core/
 COPY odoo_mcp_admin/ /tmp/pkg/odoo_mcp_admin/
 RUN pip install --no-cache-dir /tmp/pkg/ && rm -rf /tmp/pkg/

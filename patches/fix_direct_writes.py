@@ -64,12 +64,23 @@ NEW_BLOCK = (
 def find_tools_write() -> list[str]:
     """Locate tools_write.py inside the installed odoo_mcp package."""
     paths: list[str] = []
+    # Try importlib first (most reliable)
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("odoo_mcp.tools_write")
+        if spec and spec.origin:
+            paths.append(spec.origin)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        pass
+    # Fallback to glob patterns
     patterns = [
         os.path.join(sys.prefix, "lib", "python*", "site-packages", "odoo_mcp", "tools_write.py"),
         os.path.join(os.path.dirname(__file__), "..", "src", "odoo_mcp", "tools_write.py"),
     ]
     for pattern in patterns:
-        paths.extend(glob.glob(pattern))
+        for match in glob.glob(pattern):
+            if match not in paths:
+                paths.append(match)
     return paths
 
 

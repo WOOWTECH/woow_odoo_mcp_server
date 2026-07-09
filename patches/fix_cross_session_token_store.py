@@ -54,6 +54,14 @@ def find_server_core() -> str | None:
         os.path.join(sys.prefix, "lib", "python*", "site-packages", "odoo_mcp", "server_core.py"),
         os.path.join(os.path.dirname(__file__), "..", "src", "odoo_mcp", "server_core.py"),
     ]
+    # Also try importlib to find the actual installed location
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("odoo_mcp.server_core")
+        if spec and spec.origin:
+            return spec.origin
+    except (ImportError, ModuleNotFoundError, ValueError):
+        pass
     for pattern in patterns:
         matches = glob.glob(pattern)
         if matches:

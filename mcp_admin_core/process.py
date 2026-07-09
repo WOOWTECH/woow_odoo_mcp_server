@@ -19,8 +19,10 @@ from .config import get_config_store
 
 logger = logging.getLogger(__name__)
 
-# Path to the cross-session token store patch
-_PATCH_SCRIPT = Path(__file__).resolve().parent.parent / "patches" / "fix_cross_session_token_store.py"
+# Patch scripts applied before MCP server starts
+_PATCHES_DIR = Path(__file__).resolve().parent.parent / "patches"
+_PATCH_TOKEN_STORE = _PATCHES_DIR / "fix_cross_session_token_store.py"
+_PATCH_DIRECT_WRITES = _PATCHES_DIR / "fix_direct_writes.py"
 
 
 class McpProcessManager:
@@ -62,8 +64,9 @@ class McpProcessManager:
         for key, value in env_overrides.items():
             env[key] = str(value)
 
-        # Apply cross-session token store patch before starting
-        self._ensure_token_store_patch()
+        # Apply patches before starting
+        self._run_patch(_PATCH_TOKEN_STORE, "token-store")
+        self._run_patch(_PATCH_DIRECT_WRITES, "direct-writes")
 
         cmd = [command] + args
         logger.info("Starting MCP server: %s", " ".join(cmd))
@@ -156,18 +159,13 @@ class McpProcessManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _ensure_token_store_patch() -> None:
-        """Apply the cross-session token store patch if not already applied.
-
-        The MCP SDK creates a fresh AppContext per HTTP session, isolating
-        write approval tokens.  This patch makes the token store global so
-        validate_write and execute_approved_write work across sessions.
-        """
-        if not _PATCH_SCRIPT.exists():
+    def _run_patch(script: Path, label: str) -> None:
+        """Run a patch script if it exists.  Logs output and errors."""
+        if not script.exists():
             return
         try:
             result = subprocess.run(
-                ["python3", str(_PATCH_SCRIPT)],
+                ["python3", str(script)],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -175,9 +173,9 @@ class McpProcessManager:
             for line in (result.stdout or "").splitlines():
                 logger.info(line)
             if result.returncode != 0:
-                logger.warning("Token store patch failed: %s", result.stderr)
+                logger.warning("Patch %s failed: %s", label, result.stderr)
         except Exception as exc:
-            logger.warning("Could not apply token store patch: %s", exc)
+            logger.warning("Could not apply patch %s: %s", label, exc)
 
     async def _drain_logs(self) -> None:
         """Read stdout/stderr from the subprocess and log it."""

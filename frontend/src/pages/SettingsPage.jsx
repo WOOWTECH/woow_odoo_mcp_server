@@ -284,6 +284,47 @@ export default function SettingsPage() {
               </div>
             </div>
 
+            {/* Allow Direct Writes toggle */}
+            <div className="flex items-center justify-between p-4 bg-gray-800/50 border border-gray-700 rounded-lg">
+              <div>
+                <label className="block text-sm font-medium text-gray-200">
+                  Allow Direct Writes
+                </label>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Skip the 3-step approval flow (preview → validate → execute).
+                  When enabled, execute_method can directly call create/write/unlink.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={mcpForm.env?.ODOO_MCP_ALLOW_DIRECT_WRITES === '1'}
+                onClick={() =>
+                  setMcpForm((p) => ({
+                    ...p,
+                    env: {
+                      ...p.env,
+                      ODOO_MCP_ALLOW_DIRECT_WRITES:
+                        p.env?.ODOO_MCP_ALLOW_DIRECT_WRITES === '1' ? '0' : '1',
+                    },
+                  }))
+                }
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                  mcpForm.env?.ODOO_MCP_ALLOW_DIRECT_WRITES === '1'
+                    ? 'bg-brand-500'
+                    : 'bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform ${
+                    mcpForm.env?.ODOO_MCP_ALLOW_DIRECT_WRITES === '1'
+                      ? 'translate-x-5'
+                      : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
             {/* Env vars */}
             <div>
               <label className="block text-sm font-medium text-gray-400 mb-1.5">

@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _PATCHES_DIR = Path(__file__).resolve().parent.parent / "patches"
 _PATCH_TOKEN_STORE = _PATCHES_DIR / "fix_cross_session_token_store.py"
 _PATCH_DIRECT_WRITES = _PATCHES_DIR / "fix_direct_writes.py"
+_PATCH_REMOVE_3STEP = _PATCHES_DIR / "fix_remove_3step_tools.py"
 
 
 class McpProcessManager:
@@ -67,6 +68,7 @@ class McpProcessManager:
         # Apply patches before starting
         self._run_patch(_PATCH_TOKEN_STORE, "token-store")
         self._run_patch(_PATCH_DIRECT_WRITES, "direct-writes")
+        self._run_patch(_PATCH_REMOVE_3STEP, "remove-3step", env=env)
 
         cmd = [command] + args
         logger.info("Starting MCP server: %s", " ".join(cmd))
@@ -159,7 +161,7 @@ class McpProcessManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _run_patch(script: Path, label: str) -> None:
+    def _run_patch(script: Path, label: str, env: dict | None = None) -> None:
         """Run a patch script if it exists.  Logs output and errors."""
         if not script.exists():
             return
@@ -169,6 +171,7 @@ class McpProcessManager:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=env,
             )
             for line in (result.stdout or "").splitlines():
                 logger.info(line)

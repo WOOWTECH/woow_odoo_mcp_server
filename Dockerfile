@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir odoo-mcp "mcp[cli]"
 COPY patches/ /app/patches/
 RUN python /app/patches/fix_cross_session_token_store.py && \
     python /app/patches/fix_direct_writes.py && \
-    ODOO_MCP_ALLOW_DIRECT_WRITES=1 python /app/patches/fix_remove_3step_tools.py
+    python /app/patches/fix_remove_3step_tools.py
 
 # Install the unified package (core + odoo admin)
 COPY pyproject.toml /tmp/pkg/

@@ -1,16 +1,16 @@
-"""Remove the 3-step write tools when ODOO_MCP_ALLOW_DIRECT_WRITES=1.
+"""Conditionally hide the 3-step write tools at runtime.
 
-When direct writes are enabled, Claude AI still sees preview_write,
-validate_write, and execute_approved_write as available tools and
-preferentially uses the 3-step flow — which frequently breaks due to
-cross-session token loss.
+When ODOO_MCP_ALLOW_DIRECT_WRITES=1, removes preview_write, validate_write,
+and execute_approved_write from the MCP tool list so Claude AI is forced
+to use execute_method for all write operations.
 
-This patch comments out the @mcp.tool() decorators on those 3 functions
-so they are never registered with the MCP server, forcing Claude to
-use execute_method for all write operations.
+This does NOT modify source code — it uses mcp.remove_tool() at runtime,
+so the tools can be restored by toggling the env var and restarting.
 
-Only applies when ODOO_MCP_ALLOW_DIRECT_WRITES is set to 1/true/yes.
-The script is idempotent.
+The script patches server_core.py to hook into app_lifespan(), calling
+remove_tool() after the MCP server is fully initialized.
+
+Idempotent — safe to re-run.
 """
 
 from __future__ import annotations
@@ -19,94 +19,86 @@ import glob
 import os
 import sys
 
-MARKER = "PATCH_REMOVE_3STEP"
+MARKER = "PATCH_HIDE_3STEP"
+TOOLS_TO_HIDE = ["preview_write", "validate_write", "execute_approved_write"]
 
-TARGETS = [
-    ("preview_write", "Preview create, write, or unlink"),
-    ("validate_write", "Validate a standard write payload"),
-    ("execute_approved_write", "Execute a previously previewed"),
-]
+# Code to inject after app_lifespan yields AppContext
+HOOK_CODE = '''
+    # PATCH_HIDE_3STEP: conditionally hide 3-step write tools at runtime
+    if os.environ.get("ODOO_MCP_ALLOW_DIRECT_WRITES", "").strip().lower() in ("1", "true", "yes"):
+        for _tool_name in ["preview_write", "validate_write", "execute_approved_write"]:
+            try:
+                server.remove_tool(_tool_name)
+            except Exception:
+                pass
+'''
 
 
-def find_tools_write() -> list[str]:
-    paths: list[str] = []
+def find_server_core() -> str | None:
     try:
         import importlib.util
-        spec = importlib.util.find_spec("odoo_mcp.tools_write")
+        spec = importlib.util.find_spec("odoo_mcp.server_core")
         if spec and spec.origin:
-            paths.append(spec.origin)
+            return spec.origin
     except (ImportError, ModuleNotFoundError, ValueError):
         pass
     for pattern in [
-        os.path.join(sys.prefix, "lib", "python*", "site-packages", "odoo_mcp", "tools_write.py"),
+        os.path.join(sys.prefix, "lib", "python*", "site-packages", "odoo_mcp", "server_core.py"),
     ]:
         for match in glob.glob(pattern):
-            if match not in paths:
-                paths.append(match)
-    return paths
+            return match
+    return None
 
 
 def patch(filepath: str) -> bool:
     with open(filepath) as f:
-        lines = f.readlines()
+        content = f.read()
 
-    if MARKER in "".join(lines):
-        print(f"[patch-remove-3step] Already applied to {filepath}")
+    if MARKER in content:
+        print(f"[patch-hide-3step] Already applied to {filepath}")
         return False
 
-    # Only apply if ALLOW_DIRECT_WRITES is enabled
-    allow = os.environ.get("ODOO_MCP_ALLOW_DIRECT_WRITES", "").strip().lower()
-    if allow not in ("1", "true", "yes"):
-        print(f"[patch-remove-3step] Skipped (ODOO_MCP_ALLOW_DIRECT_WRITES={allow!r})")
+    # Find the yield line in app_lifespan
+    # Pattern: "    yield AppContext()"
+    target = "    yield AppContext()"
+    if target not in content:
+        print(f"[patch-hide-3step] ERROR: cannot find '{target}' in {filepath}", file=sys.stderr)
         return False
 
-    changed = False
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        # Look for @mcp.tool( decorator
-        if line.strip() == "@mcp.tool(":
-            # Check if the next few lines contain one of our target descriptions
-            block = "".join(lines[i:i+10])
-            for func_name, desc_prefix in TARGETS:
-                if desc_prefix in block:
-                    # Comment out the entire decorator block (@mcp.tool(...))
-                    # Find the closing )
-                    j = i
-                    depth = 0
-                    while j < len(lines):
-                        depth += lines[j].count("(") - lines[j].count(")")
-                        lines[j] = f"# {MARKER}: {lines[j]}"
-                        if depth <= 0:
-                            break
-                        j += 1
-                    print(f"[patch-remove-3step] Removed @mcp.tool for {func_name}")
-                    changed = True
-                    break
-        i += 1
+    # Ensure 'import os' exists
+    if "import os" not in content[:1000]:
+        content = "import os\n" + content
 
-    if changed:
-        with open(filepath, "w") as f:
-            f.writelines(lines)
-        # Clear cache
-        cache_dir = os.path.join(os.path.dirname(filepath), "__pycache__")
-        if os.path.isdir(cache_dir):
-            for pyc in glob.glob(os.path.join(cache_dir, "tools_write*.pyc")):
-                os.remove(pyc)
-        print(f"[patch-remove-3step] Applied to {filepath}")
-    return changed
+    # Insert hook BEFORE yield (so tools are removed before server starts serving)
+    content = content.replace(
+        target,
+        HOOK_CODE + "\n" + target,
+        1,
+    )
+
+    with open(filepath, "w") as f:
+        f.write(content)
+
+    # Clear cache
+    cache_dir = os.path.join(os.path.dirname(filepath), "__pycache__")
+    if os.path.isdir(cache_dir):
+        for pyc in glob.glob(os.path.join(cache_dir, "server_core*.pyc")):
+            os.remove(pyc)
+
+    print(f"[patch-hide-3step] Applied to {filepath}")
+    return True
 
 
 def main() -> int:
-    paths = find_tools_write()
-    if not paths:
-        print("[patch-remove-3step] ERROR: could not find tools_write.py", file=sys.stderr)
+    filepath = find_server_core()
+    if not filepath:
+        print("[patch-hide-3step] ERROR: cannot find server_core.py", file=sys.stderr)
         return 1
-    for filepath in paths:
-        try:
-            patch(filepath)
-        except Exception as exc:
-            print(f"[patch-remove-3step] ERROR: {exc}", file=sys.stderr)
+    try:
+        patch(filepath)
+    except Exception as exc:
+        print(f"[patch-hide-3step] ERROR: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

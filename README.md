@@ -746,6 +746,72 @@ woow_odoo_mcp_server/
 
 ---
 
+## Use Case & Permission Model
+
+### Recommended Use: Multi-User Application Server
+
+This bundle is designed to be deployed as a **shared MCP endpoint for multiple users**, where each user's access is controlled by the **Odoo account** used for the MCP connection — not by the MCP server itself.
+
+```
+Sales Rep   → MCP instance (Odoo: sales_user account)  → sees own orders only
+Accountant  → MCP instance (Odoo: accountant account)   → sees invoices, no HR
+HR Manager  → MCP instance (Odoo: hr_manager account)    → sees employees, leaves
+Admin       → MCP instance (Odoo: admin account)         → full access
+```
+
+### How Permissions Work
+
+The MCP server passes every request through Odoo's XML-RPC layer. **Odoo enforces three permission layers automatically**, regardless of MCP server settings:
+
+| Layer | What It Controls | Example |
+|-------|-----------------|---------|
+| **ir.model.access** (ACL) | Which models can be accessed and with what operations (read/create/write/delete) | Sales user cannot access `purchase.order` |
+| **ir.rule** (Record Rules) | Which records are visible within accessible models | "Own Documents Only" means sales user sees only their own orders |
+| **Field-level access** | Which fields are visible to which groups | Salary fields hidden from non-HR users |
+
+**The MCP server cannot bypass these permissions.** If the connected Odoo account doesn't have access to a model or record, the MCP tool call will return an access error — just as if the user tried to access it through the Odoo web interface.
+
+### Deployment for Different User Roles
+
+Deploy separate instances with different Odoo accounts for different permission levels:
+
+```yaml
+# Instance for sales team (read-only on most modules)
+- name: ODOO_USERNAME
+  value: "sales_mcp_user"
+- name: ODOO_PASSWORD
+  value: "sales_password"
+
+# Instance for admin team (full access)
+- name: ODOO_USERNAME
+  value: "admin"
+- name: ODOO_PASSWORD
+  value: "admin_password"
+```
+
+Each instance gets its own MCP proxy token, so you can distribute different tokens to different teams.
+
+### Tool-Level Control
+
+In addition to Odoo ACL, this bundle provides **per-tool enable/disable** through the Admin GUI:
+
+- Disable all `Write & Operate` tools (preview_write, validate_write, execute_approved_write, execute_method, chatter_post) for read-only instances
+- Keep only `Read & Discover` tools (search_records, list_models, aggregate_records, etc.) for reporting users
+- The 39 tools can be individually toggled to match each deployment's needs
+
+### Comparison with Woow Odoo Manage MCP Server
+
+| Aspect | This Bundle (A款) | [Manage MCP Server](https://github.com/WOOWTECH/woow_odoo_manage_mcp_server) (B款) |
+|--------|-------------------|-------------------|
+| **Best for** | Multi-user application server | Single admin management console |
+| **Permission model** | Odoo account ACL (per-user) | YOLO=true (full access, admin only) |
+| **Tools** | 39 tools with per-tool toggle | 10 tools with master toggle |
+| **Write safety** | 3-step approval (preview→validate→execute) | Direct CRUD |
+| **Connection auth** | Username + Password | API Key or Password |
+| **Use case** | Distribute to team members | Admin-only operations console |
+
+---
+
 ## Related Projects
 
 - [odoo-mcp-server](https://pypi.org/project/odoo-mcp-server/) — The MCP server that provides 39 tools for interacting with Odoo via XML-RPC

@@ -1,0 +1,43 @@
+# 共用 RBAC — kasim-odoo namespace 內所有 MCP Admin GUI 部署共用
+#
+# 此 ServiceAccount / Role / RoleBinding 由本 namespace 內每一個 MCP Admin
+# 部署（odoo-mcp-admin、n8n-mcp-admin、…）共用。內容為 idempotent：各 MCP repo
+# 各保留一份相同副本，以維持「每個 repo 可獨立部署」的特性。
+# 每個 namespace 套用一次即可：
+#     kubectl apply -f k8s-rbac.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-admin-sa
+  namespace: kasim-odoo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mcp-admin-role
+  namespace: kasim-odoo
+rules:
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "list", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mcp-admin-binding
+  namespace: kasim-odoo
+subjects:
+- kind: ServiceAccount
+  name: mcp-admin-sa
+  namespace: kasim-odoo
+roleRef:
+  kind: Role
+  name: mcp-admin-role
+  apiGroup: rbac.authorization.k8s.io

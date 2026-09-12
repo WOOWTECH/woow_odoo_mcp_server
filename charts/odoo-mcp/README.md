@@ -37,7 +37,7 @@ From a clone:
 
 ```bash
 helm install mcp-odoo charts/odoo-mcp -n <tenant> \
-  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml
+  -f deploy/woow-k3s/<tenant>.yaml
 ```
 
 From a GitHub tarball, without cloning. The chart lives in a subdirectory, so the
@@ -48,10 +48,10 @@ whose `Chart.yaml` sits at the root, which a GitHub source archive never has:
 REF=main   # any branch or tag
 curl -fsSL "https://github.com/WOOWTECH/woow_odoo_mcp_server/archive/refs/heads/${REF}.tar.gz" | tar -xz
 # GitHub names the extracted directory after the ref, with / replaced by -
-CHART="woow_odoo_mcp_server-${REF//\//-}/charts/odoo-mcp"
+SRC="woow_odoo_mcp_server-${REF//\//-}"   # the extracted repo
 
-helm install mcp-odoo "$CHART" -n <tenant> \
-  -f "$CHART/deploy/woow-k3s/<tenant>.yaml"
+helm install mcp-odoo "$SRC/charts/odoo-mcp" -n <tenant> \
+  -f "$SRC/deploy/woow-k3s/<tenant>.yaml"
 ```
 
 For a tag, use `archive/refs/tags/${REF}.tar.gz` instead. CI re-runs this
@@ -82,7 +82,7 @@ which is what the tenant's Cloudflare tunnel points at.
 | `odoo.url`, `odoo.db` | — | **required**, no default |
 | `server.allowedHosts` | `[]` | **required**; an empty list makes every request fail the DNS-rebinding check |
 | `baseName` | `mcp-odoo` | prefix for every object |
-| `namespace.create` / `.name` | `false` / release ns | a namespace equal to the release namespace is never rendered |
+| `namespace.create` / `.name` | `false` / release ns | names **only** the Namespace object; it never moves the release's own objects, which always follow `-n`. A namespace equal to the release namespace is never rendered |
 | `keepOnUninstall` | `true` | `helm.sh/resource-policy: keep` on Namespace, PVC and chart-created Secrets |
 | `storageClassName` | `longhorn` | `longhorn-delete` for throwaway tests, `local-path` on the laptop cluster |
 | `secrets.create` | `false` | `true` renders the Secrets from `required()`-guarded values |
@@ -92,6 +92,8 @@ which is what the tenant's Cloudflare tunnel points at.
 | `admin.enabled` | `false` | the FastAPI console on `:8080` |
 | `networkPolicy.enabled` | `false` | the live tenants already have a namespace-wide policy |
 | `server.podAnnotations` | `{}` | carries the live `kubectl.kubernetes.io/restartedAt` stamp |
+| `nodeSelector` | `{}` | node placement for every pod, including the `helm test` pod; empty adds nothing to a live pod template |
+| `tests.timeoutSeconds` | `180` | how long the smoke pod retries a connection before failing |
 
 Full list with comments: [`values.yaml`](values.yaml).
 
@@ -127,6 +129,60 @@ proxy returns `403` without a token and forwards `/private_<token>/mcp` with one
 and the console answers `GET /healthz` when it is enabled. It reads the token
 from the mounted ConfigMap, so the token never appears in a pod spec or an
 audit log.
+
+---
+
+## Testing without the private image
+
+`image.repository` (`ghcr.io/woowtech/woow-odoo-mcp-server`) is a **private**
+GHCR package. It is pulled with the default `imagePullSecrets: [{name:
+mcp-admin-ghcr}]`, and that Secret only exists in real tenant namespaces — it is
+created once by hand per tenant, outside this chart. **Do not copy a tenant's
+`mcp-admin-ghcr` (or any other production pull secret) into a test namespace**;
+phase-1 rules only allow reusing one real org credential in a test (the
+OpenRouter key, for a specific functional check elsewhere in this repo's
+migration), and a GHCR pull secret is not that key.
+
+The way that actually exercises the real image, and the one used to verify this
+chart on `woow-k3s`:
+
+* **Pin the pods to a node that already has the image cached.** Every node that
+  runs a tenant's MCP already has `ghcr.io/woowtech/woow-odoo-mcp-server` in its
+  containerd cache, so with `image.pullPolicy=IfNotPresent` and
+  `imagePullSecrets: []` the kubelet never contacts ghcr.io and no credential is
+  involved:
+
+  ```bash
+  # a node that runs an MCP pod today
+  NODE=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.spec.containers[0].image}{"\n"}{end}' \
+         | grep woow-odoo-mcp-server | head -1 | cut -f1)
+
+  helm install mcp-odoo charts/odoo-mcp -n ht-odoo-mcp --create-namespace \
+    --set imagePullSecrets=null --set image.pullPolicy=IfNotPresent \
+    --set nodeSelector."kubernetes\.io/hostname"="$NODE" \
+    --set storageClassName=longhorn-delete \
+    --set odoo.url=http://odoo-stub.ht-odoo-mcp.svc.cluster.local:8069 \
+    --set odoo.db=testdb \
+    --set "server.allowedHosts={localhost,127.0.0.1,mcp-odoo.ht-odoo-mcp.svc.cluster.local,mcp-odoo-proxy.ht-odoo-mcp.svc.cluster.local}" \
+    --set secrets.create=true --set secrets.odooPassword="$(openssl rand -hex 16)" \
+    --set proxy.config.create=true --set proxy.config.authToken="$(openssl rand -hex 10)"
+
+  helm test mcp-odoo -n ht-odoo-mcp --logs
+  ```
+
+  `nodeSelector` is empty in every instance values file, so it adds nothing to a
+  live pod template.
+
+  Point `odoo.url` at a throwaway stub in the same namespace rather than at a
+  real tenant: the MCP server connects to Odoo lazily, so `initialize` and
+  `tools/list` work against a stub that only answers `/xmlrpc/2/*` and
+  `/jsonrpc`.
+
+* **App behaviour, out-of-cluster** — install the same `odoo-mcp` version the
+  Dockerfile installs into a venv, apply `files/patches/*.py` unmodified, and
+  run `python3 -m odoo_mcp --transport streamable-http …` directly; separately
+  run `odoo_mcp_admin` with `uvicorn` and hit `/healthz`. This exercises the
+  actual server and admin console without any cluster at all.
 
 ---
 
@@ -175,11 +231,26 @@ When the comparison is clean, adopt with:
 
 ```bash
 helm upgrade --install mcp-odoo charts/odoo-mcp -n <tenant> \
-  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml --take-ownership
+  -f deploy/woow-k3s/<tenant>.yaml --take-ownership
 ```
 
 Then confirm no pod restarted (`kubectl get pods -o wide`, compare UIDs and
 restart counts before and after).
+
+### Rotate the tenant credentials at takeover
+
+The chart never renders the Odoo password (Secret `mcp-odoo-secrets`), the MCP
+proxy token (part of the nginx config in `mcp-odoo-proxy-config`) or the console
+credentials (`mcp-admin-config`): they were created by hand, before this chart
+existed, and neither `helm upgrade --take-ownership` nor `helm uninstall` reads
+or replaces them. Adoption is therefore the natural moment to check each one
+against the strength policy in force today and rotate whatever falls short - the
+chart cannot do it for you, and nothing in it will tell you the value is weak.
+
+Rotation is a tenant-owner action, entirely outside this chart: write the new
+value into the Secret or ConfigMap and restart the pods (follow-up 7 below for
+the ReadWriteOnce rollout caveat). No file in `deploy/woow-k3s/` changes, because
+no credential is in there in the first place.
 
 ### Instance values
 
@@ -223,3 +294,8 @@ These would change a running pod template, so they stay opt-in and off:
    pod lands on the same node). `strategy: Recreate` fixes it but changes the live
    Deployment spec, so it is not in this chart. Until then, roll such a tenant with
    `kubectl scale deploy/mcp-odoo --replicas=0` and back to 1.
+8. **No readiness probe on the MCP server.** The live Deployments have none, so
+   the chart renders none: `kubectl rollout status` returns while uvicorn is still
+   starting, and a Service endpoint exists before the port is open. The `helm test`
+   pod works around it by retrying every connection up to `tests.timeoutSeconds`.
+   Adding a probe would change the live pod template.

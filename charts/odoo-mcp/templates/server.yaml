@@ -34,6 +34,10 @@ spec:
       labels:
         app: {{ include "odoo-mcp.name" . }}
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - command:
         - sh

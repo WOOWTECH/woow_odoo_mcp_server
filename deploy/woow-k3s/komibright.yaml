@@ -2,7 +2,7 @@
 # that every "mcp-odoo + mcp-odoo-proxy" tenant uses.
 #
 #   helm --kube-context woow-k3s template mcp-odoo charts/odoo-mcp \
-#     -n komibright -f charts/odoo-mcp/deploy/woow-k3s/komibright.yaml
+#     -n komibright -f deploy/woow-k3s/komibright.yaml
 #
 # renders exactly the objects kubectl apply created there (scripts/check-drift.sh
 # proves it). NO SECRETS HERE:
@@ -12,10 +12,6 @@
 #   - /data/config.json stays in ConfigMap mcp-admin-config, which the chart
 #     mounts and does not render either
 
-namespace:
-  # The namespace belongs to the Odoo tenant, not to this release.
-  create: false
-  name: komibright
 
 storageClassName: longhorn
 

@@ -36,7 +36,7 @@ clone 之後：
 
 ```bash
 helm install mcp-odoo charts/odoo-mcp -n <tenant> \
-  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml
+  -f deploy/woow-k3s/<tenant>.yaml
 ```
 
 不 clone，直接用 GitHub tarball。chart 放在子目錄，所以要先解開：
@@ -47,10 +47,10 @@ helm install mcp-odoo charts/odoo-mcp -n <tenant> \
 REF=main   # 任何 branch 或 tag
 curl -fsSL "https://github.com/WOOWTECH/woow_odoo_mcp_server/archive/refs/heads/${REF}.tar.gz" | tar -xz
 # GitHub 會用 ref 當解開後的目錄名，並把 / 換成 -
-CHART="woow_odoo_mcp_server-${REF//\//-}/charts/odoo-mcp"
+SRC="woow_odoo_mcp_server-${REF//\//-}"   # 解開後的 repo 目錄
 
-helm install mcp-odoo "$CHART" -n <tenant> \
-  -f "$CHART/deploy/woow-k3s/<tenant>.yaml"
+helm install mcp-odoo "$SRC/charts/odoo-mcp" -n <tenant> \
+  -f "$SRC/deploy/woow-k3s/<tenant>.yaml"
 ```
 
 用 tag 的話換成 `archive/refs/tags/${REF}.tar.gz`。CI 每次 push 都會重跑這條
@@ -81,7 +81,7 @@ MCP 端點會是
 | `odoo.url`、`odoo.db` | — | **必填**，沒有預設值 |
 | `server.allowedHosts` | `[]` | **必填**；空清單會讓每個請求都卡在 DNS rebinding 檢查 |
 | `baseName` | `mcp-odoo` | 所有物件的名稱前綴 |
-| `namespace.create` / `.name` | `false` / release ns | 等於 release namespace 的 namespace 永遠不會被 render |
+| `namespace.create` / `.name` | `false` / release ns | 只決定 Namespace 物件本身的名稱；不會搬動這個 release 的其他物件（永遠跟著 `-n`）。等於 release namespace 的 namespace 永遠不會被 render |
 | `keepOnUninstall` | `true` | 在 Namespace、PVC、chart 產生的 Secret 加上 `helm.sh/resource-policy: keep` |
 | `storageClassName` | `longhorn` | 測試用 `longhorn-delete`，本機叢集用 `local-path` |
 | `secrets.create` | `false` | `true` 時才從 `required()` 保護的 values 產生 Secret |
@@ -91,6 +91,8 @@ MCP 端點會是
 | `admin.enabled` | `false` | `:8080` 的 FastAPI 管理後台 |
 | `networkPolicy.enabled` | `false` | 正式租戶已經有 namespace 層級的 policy |
 | `server.podAnnotations` | `{}` | 用來帶入正式環境的 `kubectl.kubernetes.io/restartedAt` 標記 |
+| `nodeSelector` | `{}` | 所有 Pod（含 `helm test` Pod）的節點選擇；留空時不會在正式 Pod template 上加任何欄位 |
+| `tests.timeoutSeconds` | `180` | smoke Pod 重試連線的上限秒數 |
 
 完整清單和註解在 [`values.yaml`](values.yaml)。
 
@@ -123,6 +125,55 @@ helm test mcp-odoo -n <tenant> --logs
 `helm test` 跑一個唯讀 smoke pod：MCP server 在 `:8000` 有回應、proxy 沒 token 回
 `403`、帶 token 的 `/private_<token>/mcp` 會被轉發、後台啟用時 `GET /healthz` 回
 200。token 是從掛進去的 ConfigMap 讀的，所以不會出現在 pod spec 或 audit log 裡。
+
+---
+
+## 不用 private image 也能測
+
+`image.repository`（`ghcr.io/woowtech/woow-odoo-mcp-server`）是一個 **private**
+的 GHCR package，預設用 `imagePullSecrets: [{name: mcp-admin-ghcr}]` 拉取，而這
+個 Secret 只存在於正式 tenant 的 namespace 裡——是每個 tenant 手動建一次的，跟這
+個 chart 無關。**不要把某個 tenant 的 `mcp-admin-ghcr`（或任何其他正式環境的
+pull secret）複製進測試 namespace**；Helm 遷移 phase 1 的規則只允許在測試裡重用
+一個真實的組織憑證（OpenRouter key，用在遷移計畫裡另一個功能測試），GHCR pull
+secret 不算在內。
+
+真正跑得起 image、也是這份 chart 在 `woow-k3s` 上驗證時採用的做法：
+
+* **把 Pod 釘在已經快取這個 image 的節點上。** 現在跑著租戶 MCP 的節點，
+  containerd 裡本來就有 `ghcr.io/woowtech/woow-odoo-mcp-server`；只要
+  `image.pullPolicy=IfNotPresent` 加上 `imagePullSecrets: []`，kubelet 完全不會
+  連 ghcr.io，也就不需要任何憑證：
+
+  ```bash
+  # 找一個今天就在跑 MCP pod 的節點
+  NODE=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.spec.containers[0].image}{"\n"}{end}' \
+         | grep woow-odoo-mcp-server | head -1 | cut -f1)
+
+  helm install mcp-odoo charts/odoo-mcp -n ht-odoo-mcp --create-namespace \
+    --set imagePullSecrets=null --set image.pullPolicy=IfNotPresent \
+    --set nodeSelector."kubernetes\.io/hostname"="$NODE" \
+    --set storageClassName=longhorn-delete \
+    --set odoo.url=http://odoo-stub.ht-odoo-mcp.svc.cluster.local:8069 \
+    --set odoo.db=testdb \
+    --set "server.allowedHosts={localhost,127.0.0.1,mcp-odoo.ht-odoo-mcp.svc.cluster.local,mcp-odoo-proxy.ht-odoo-mcp.svc.cluster.local}" \
+    --set secrets.create=true --set secrets.odooPassword="$(openssl rand -hex 16)" \
+    --set proxy.config.create=true --set proxy.config.authToken="$(openssl rand -hex 10)"
+
+  helm test mcp-odoo -n ht-odoo-mcp --logs
+  ```
+
+  所有 instance values 都沒有設 `nodeSelector`，所以它不會在正式 Pod template 上
+  加任何欄位。
+
+  `odoo.url` 請指向同一個測試 namespace 裡的 stub，不要指向真的租戶：MCP server
+  是延遲連線 Odoo 的，只要 stub 會回 `/xmlrpc/2/*` 跟 `/jsonrpc`，
+  `initialize` 和 `tools/list` 就能通。
+
+* **App 本身的行為，在叢集外驗證** — 在虛擬環境裡裝 Dockerfile 裝的同一個
+  `odoo-mcp` 版本，套用 `files/patches/*.py`（不修改），直接跑
+  `python3 -m odoo_mcp --transport streamable-http …`；另外用 `uvicorn` 跑
+  `odoo_mcp_admin`，打 `/healthz`。完全不需要叢集。
 
 ---
 
@@ -167,10 +218,23 @@ annotation，不會動到 pod template，也不會 roll 任何東西。
 
 ```bash
 helm upgrade --install mcp-odoo charts/odoo-mcp -n <tenant> \
-  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml --take-ownership
+  -f deploy/woow-k3s/<tenant>.yaml --take-ownership
 ```
 
 接著確認沒有 pod 重啟（`kubectl get pods -o wide`，比對前後的 UID 和 restart 次數）。
+
+### 接管時順手輪替租戶憑證
+
+chart 從來不會 render Odoo 密碼（Secret `mcp-odoo-secrets`）、MCP proxy token
+（包在 `mcp-odoo-proxy-config` 的 nginx 設定裡）或後台憑證（`mcp-admin-config`）：
+這些都是在這個 chart 出現之前手動建立的，`helm upgrade --take-ownership` 和
+`helm uninstall` 都不會去讀、也不會覆寫。所以接管正是最適合的時機，把每一個都對照
+目前的強度規範檢查一次，不合格的就輪替掉 —— chart 沒辦法幫你做，也不會提醒你某個值
+太弱。
+
+輪替完全是租戶擁有者的事，不屬於這個 chart：把新值寫進 Secret 或 ConfigMap，再重啟
+pod（ReadWriteOnce 的重啟陷阱見下面的後續工作第 7 點）。`deploy/woow-k3s/` 底下不會有
+任何檔案要改，因為那裡本來就沒有任何憑證。
 
 ### Instance values
 
@@ -209,3 +273,7 @@ values 檔並讓 `check-drift.sh` 回報乾淨；如果漂移只是形式上的�
    節點）。改成 `strategy: Recreate` 可以解決，但那會動到正式的 Deployment spec，所以不放
    進這版 chart。在那之前，這種租戶請用 `kubectl scale deploy/mcp-odoo --replicas=0`
    再調回 1 的方式重啟。
+8. **MCP server 沒有 readiness probe。** 正式環境的 Deployment 本來就沒有，所以
+   chart 也不加：`kubectl rollout status` 會在 uvicorn 還沒起來前就返回，Service
+   也會在連接埠還沒開之前就有 endpoint。`helm test` 的 smoke pod 用重試
+   （`tests.timeoutSeconds`）繞過這點。加上 probe 會改到正式的 Pod template。

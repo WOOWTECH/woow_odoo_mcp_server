@@ -5,12 +5,12 @@ never be deleted by `helm uninstall`. In the live tenants the namespace belongs
 to the Odoo deployment, not to this chart - leave namespace.create=false there.
 */ -}}
 {{- if .Values.namespace.create }}
-{{- if ne (include "odoo-mcp.ns" .) .Release.Namespace }}
+{{- if ne (include "odoo-mcp.namespaceName" .) .Release.Namespace }}
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ include "odoo-mcp.ns" . }}
+  name: {{ include "odoo-mcp.namespaceName" . }}
   {{- with (include "odoo-mcp.labels" .) }}
   {{- . | nindent 2 }}
   {{- end }}

@@ -312,7 +312,7 @@ helm install mcp-odoo charts/odoo-mcp -n <tenant> --create-namespace \
 
 # 已經存在的租戶（不含祕密的 values 放在 repo 裡）
 helm install mcp-odoo charts/odoo-mcp -n komibright \
-  -f charts/odoo-mcp/deploy/woow-k3s/komibright.yaml
+  -f deploy/woow-k3s/komibright.yaml
 
 helm test mcp-odoo -n <tenant> --logs
 ```

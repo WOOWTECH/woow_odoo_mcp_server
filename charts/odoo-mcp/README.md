@@ -37,7 +37,7 @@ From a clone:
 
 ```bash
 helm install mcp-odoo charts/odoo-mcp -n <tenant> \
-  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml
+  -f deploy/woow-k3s/<tenant>.yaml
 ```
 
 From a GitHub tarball, without cloning. The chart lives in a subdirectory, so the
@@ -48,10 +48,10 @@ whose `Chart.yaml` sits at the root, which a GitHub source archive never has:
 REF=main   # any branch or tag
 curl -fsSL "https://github.com/WOOWTECH/woow_odoo_mcp_server/archive/refs/heads/${REF}.tar.gz" | tar -xz
 # GitHub names the extracted directory after the ref, with / replaced by -
-CHART="woow_odoo_mcp_server-${REF//\//-}/charts/odoo-mcp"
+SRC="woow_odoo_mcp_server-${REF//\//-}"   # the extracted repo
 
-helm install mcp-odoo "$CHART" -n <tenant> \
-  -f "$CHART/deploy/woow-k3s/<tenant>.yaml"
+helm install mcp-odoo "$SRC/charts/odoo-mcp" -n <tenant> \
+  -f "$SRC/deploy/woow-k3s/<tenant>.yaml"
 ```
 
 For a tag, use `archive/refs/tags/${REF}.tar.gz` instead. CI re-runs this
@@ -92,6 +92,8 @@ which is what the tenant's Cloudflare tunnel points at.
 | `admin.enabled` | `false` | the FastAPI console on `:8080` |
 | `networkPolicy.enabled` | `false` | the live tenants already have a namespace-wide policy |
 | `server.podAnnotations` | `{}` | carries the live `kubectl.kubernetes.io/restartedAt` stamp |
+| `nodeSelector` | `{}` | node placement for every pod, including the `helm test` pod; empty adds nothing to a live pod template |
+| `tests.timeoutSeconds` | `180` | how long the smoke pod retries a connection before failing |
 
 Full list with comments: [`values.yaml`](values.yaml).
 
@@ -141,21 +143,46 @@ phase-1 rules only allow reusing one real org credential in a test (the
 OpenRouter key, for a specific functional check elsewhere in this repo's
 migration), and a GHCR pull secret is not that key.
 
-Two ways to test a fresh install without it:
+The way that actually exercises the real image, and the one used to verify this
+chart on `woow-k3s`:
 
-* **Chart wiring, with a public stand-in image** — set
-  `imagePullSecrets=null` and point `image.repository`/`image.tag` at a public
-  image (e.g. `busybox:latest`, which is also what `busybox.image` already uses
-  for the init container). The pod won't run the real server, but it proves
-  every ConfigMap/Secret/PVC mount and the container command are wired
-  correctly: the pod reaches `python3 -m odoo_mcp …` and only fails inside
-  busybox with "no such file or directory", not on a missing mount.
+* **Pin the pods to a node that already has the image cached.** Every node that
+  runs a tenant's MCP already has `ghcr.io/woowtech/woow-odoo-mcp-server` in its
+  containerd cache, so with `image.pullPolicy=IfNotPresent` and
+  `imagePullSecrets: []` the kubelet never contacts ghcr.io and no credential is
+  involved:
+
+  ```bash
+  # a node that runs an MCP pod today
+  NODE=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.spec.containers[0].image}{"\n"}{end}' \
+         | grep woow-odoo-mcp-server | head -1 | cut -f1)
+
+  helm install mcp-odoo charts/odoo-mcp -n ht-odoo-mcp --create-namespace \
+    --set imagePullSecrets=null --set image.pullPolicy=IfNotPresent \
+    --set nodeSelector."kubernetes\.io/hostname"="$NODE" \
+    --set storageClassName=longhorn-delete \
+    --set odoo.url=http://odoo-stub.ht-odoo-mcp.svc.cluster.local:8069 \
+    --set odoo.db=testdb \
+    --set "server.allowedHosts={localhost,127.0.0.1,mcp-odoo.ht-odoo-mcp.svc.cluster.local,mcp-odoo-proxy.ht-odoo-mcp.svc.cluster.local}" \
+    --set secrets.create=true --set secrets.odooPassword="$(openssl rand -hex 16)" \
+    --set proxy.config.create=true --set proxy.config.authToken="$(openssl rand -hex 10)"
+
+  helm test mcp-odoo -n ht-odoo-mcp --logs
+  ```
+
+  `nodeSelector` is empty in every instance values file, so it adds nothing to a
+  live pod template.
+
+  Point `odoo.url` at a throwaway stub in the same namespace rather than at a
+  real tenant: the MCP server connects to Odoo lazily, so `initialize` and
+  `tools/list` work against a stub that only answers `/xmlrpc/2/*` and
+  `/jsonrpc`.
+
 * **App behaviour, out-of-cluster** — install the same `odoo-mcp` version the
   Dockerfile installs into a venv, apply `files/patches/*.py` unmodified, and
   run `python3 -m odoo_mcp --transport streamable-http …` directly; separately
   run `odoo_mcp_admin` with `uvicorn` and hit `/healthz`. This exercises the
-  actual server and admin console — the MCP handshake and the health endpoint —
-  without needing the private image or a production pull credential at all.
+  actual server and admin console without any cluster at all.
 
 ---
 
@@ -204,7 +231,7 @@ When the comparison is clean, adopt with:
 
 ```bash
 helm upgrade --install mcp-odoo charts/odoo-mcp -n <tenant> \
-  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml --take-ownership
+  -f deploy/woow-k3s/<tenant>.yaml --take-ownership
 ```
 
 Then confirm no pod restarted (`kubectl get pods -o wide`, compare UIDs and
@@ -252,3 +279,8 @@ These would change a running pod template, so they stay opt-in and off:
    pod lands on the same node). `strategy: Recreate` fixes it but changes the live
    Deployment spec, so it is not in this chart. Until then, roll such a tenant with
    `kubectl scale deploy/mcp-odoo --replicas=0` and back to 1.
+8. **No readiness probe on the MCP server.** The live Deployments have none, so
+   the chart renders none: `kubectl rollout status` returns while uvicorn is still
+   starting, and a Service endpoint exists before the port is open. The `helm test`
+   pod works around it by retrying every connection up to `tests.timeoutSeconds`.
+   Adding a probe would change the live pod template.

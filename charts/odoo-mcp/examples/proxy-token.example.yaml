@@ -10,7 +10,7 @@
 # pass the token at install time from somewhere outside the repo:
 #
 #   helm install mcp-odoo charts/odoo-mcp -n <tenant> \
-#     -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml \
+#     -f deploy/woow-k3s/<tenant>.yaml \
 #     --set proxy.config.create=true \
 #     --set proxy.config.authToken="$MCP_AUTH_TOKEN"
 #

@@ -52,6 +52,15 @@ busybox:
   image: busybox:latest
   pullPolicy: Always
 
+# Node placement for every pod this chart creates (server, proxy, console and
+# the `helm test` pod). Empty by default, so nothing is added to any live pod
+# template - `helm template` with the instance values is unchanged by this key.
+# A test install uses it to land on a node that already has the private image in
+# its containerd cache, which is what makes a functional test possible without
+# copying a tenant's GHCR pull secret (see README "Testing without the private
+# image").
+nodeSelector: {}
+
 odoo:
   # Required. https://<tenant>-odoo.woowtech.io
   url: ""
@@ -241,3 +250,7 @@ tests:
   # `helm test` smoke pod: MCP server reachable, proxy 403 without the token and
   # proxied with it, admin /healthz. Read-only.
   enabled: true
+  # How long the smoke pod keeps retrying a connection before it fails. The MCP
+  # server carries no readiness probe (the live Deployments have none), so a
+  # `helm test` straight after `helm install` has to wait for it.
+  timeoutSeconds: 180

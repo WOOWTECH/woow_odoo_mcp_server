@@ -31,7 +31,7 @@ RELEASE="${RELEASE:-mcp-odoo}"
 PREFIX="${PREFIX:-mcp-}"
 COVERAGE="${COVERAGE:-1}"
 cd "$(dirname "$0")/.."
-VALUES="${VALUES:-charts/odoo-mcp/deploy/woow-k3s/${NAMESPACE}.yaml}"
+VALUES="${VALUES:-deploy/woow-k3s/${NAMESPACE}.yaml}"
 
 [ -f "$VALUES" ] || { echo "no instance values at $VALUES (set VALUES=...)"; exit 2; }
 

@@ -13,6 +13,9 @@ side effect.
 
 The token is read from the mounted ConfigMap, never passed as an argument, so it
 cannot end up in `kubectl describe` or in an audit log.
+
+Every connection is retried until tests.timeoutSeconds, so `helm test` run
+immediately after `helm install` waits for the server instead of failing.
 */ -}}
 {{- if .Values.tests.enabled }}
 ---
@@ -31,6 +34,10 @@ metadata:
     helm.sh/hook-delete-policy: before-hook-creation
 spec:
   restartPolicy: Never
+  {{- with .Values.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   {{- with .Values.imagePullSecrets }}
   imagePullSecrets:
     {{- toYaml . | nindent 4 }}
@@ -42,16 +49,32 @@ spec:
       command: [python3, -c]
       args:
         - |
-          import json, os, re, sys, urllib.error, urllib.request
+          import json, os, re, sys, time, urllib.error, urllib.request
+
+          deadline = time.time() + float(os.environ["SMOKE_TIMEOUT"])
 
           def call(url, data=None, headers=None):
               req = urllib.request.Request(url, data=data, headers=headers or {},
                                            method="POST" if data else "GET")
-              try:
-                  with urllib.request.urlopen(req, timeout=60) as r:
-                      return r.status, r.read(4000).decode("utf-8", "replace")
-              except urllib.error.HTTPError as e:
-                  return e.code, e.read(4000).decode("utf-8", "replace")
+              while True:
+                  try:
+                      with urllib.request.urlopen(req, timeout=60) as r:
+                          return r.status, r.read(4000).decode("utf-8", "replace")
+                  except urllib.error.HTTPError as e:
+                      # An answer is an answer: 403 and 421 are results, not failures.
+                      return e.code, e.read(4000).decode("utf-8", "replace")
+                  except OSError as e:
+                      # Retry until SMOKE_TIMEOUT. Two real reasons, both transient:
+                      # the MCP server has no readiness probe (the live Deployments
+                      # have none and this chart renders them field for field), so
+                      # `helm test` straight after `helm install` can arrive before
+                      # uvicorn listens; and a pod's very first packets can be lost
+                      # while its own CNI rules settle, which shows up as
+                      # ECONNREFUSED in the first second of its life.
+                      if time.time() > deadline:
+                          raise
+                      print("waiting for %s (%s)" % (url, e), flush=True)
+                      time.sleep(3)
 
           server = os.environ.get("SERVER_URL")
           if server:
@@ -93,6 +116,8 @@ spec:
 
           print("SMOKE OK")
       env:
+        - name: SMOKE_TIMEOUT
+          value: {{ .Values.tests.timeoutSeconds | quote }}
         {{- if .Values.server.enabled }}
         - name: SERVER_URL
           value: http://{{ include "odoo-mcp.name" . }}:{{ .Values.server.port }}{{ .Values.server.path }}

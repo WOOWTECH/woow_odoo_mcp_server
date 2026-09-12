@@ -40,6 +40,10 @@ spec:
       labels:
         app: {{ include "odoo-mcp.adminName" . }}
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       automountServiceAccountToken: false
       containers:
       - env:

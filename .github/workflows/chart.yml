@@ -21,7 +21,7 @@ jobs:
 
       - name: helm lint
         run: |
-          helm lint "$CHART" -f "$CHART/deploy/woow-k3s/komibright.yaml"
+          helm lint "$CHART" -f deploy/woow-k3s/komibright.yaml
           helm lint "$CHART" --set odoo.url=https://x,odoo.db=x,server.allowedHosts={x}
 
       - name: helm template (every values combination)
@@ -30,10 +30,10 @@ jobs:
           S="secrets.create=true,secrets.odooPassword=x,secrets.admin.adminPassword=x,secrets.admin.mcpAuthToken=x,secrets.admin.jwtSecret=x"
           # 1. the live komibright instance
           helm template mcp-odoo "$CHART" -n komibright \
-            -f "$CHART/deploy/woow-k3s/komibright.yaml"            > /tmp/instance.yaml
+            -f deploy/woow-k3s/komibright.yaml            > /tmp/instance.yaml
           # 2. the same instance with the nginx ConfigMap rendered here
           helm template mcp-odoo "$CHART" -n komibright \
-            -f "$CHART/deploy/woow-k3s/komibright.yaml" \
+            -f deploy/woow-k3s/komibright.yaml \
             --set proxy.config.create=true,proxy.config.authToken=dummytoken \
                                                                    > /tmp/instance-proxycm.yaml
           # 3. defaults + only the required values
@@ -45,6 +45,7 @@ jobs:
             --set networkPolicy.enabled=true \
             --set proxy.config.create=true,proxy.config.authToken=dummytoken \
             --set extraLabels.app\\.kubernetes\\.io/part-of=woow-odoo-mcp \
+            --set nodeSelector.'kubernetes\\.io/hostname'=node-a \
                                                                    > /tmp/full.yaml
           # 5. server only: no proxy, no policy, no patches, no tests
           helm template mcp-odoo "$CHART" -n demo --set "$M" \
@@ -113,6 +114,14 @@ jobs:
             esac
           done
           echo "every template renders in at least one combination"
+          # nodeSelector is a test-only placement knob: it must add NOTHING to a
+          # live pod template, and it must reach every pod when it is set
+          # (server, proxy, console and the helm-test pod).
+          grep -q 'nodeSelector' /tmp/instance.yaml \
+            && fail "the instance render must not contain a nodeSelector"
+          n=$(grep -c 'kubernetes.io/hostname: node-a' /tmp/full.yaml || true)
+          [ "$n" -eq 4 ] || fail "nodeSelector reached $n of 4 pod templates"
+          echo "nodeSelector: absent from the instance render, on all 4 pods when set"
 
       - name: The documented tarball install path works
         run: |
@@ -125,9 +134,9 @@ jobs:
             | tar -x -C /tmp/tb
           C=/tmp/tb/woow_odoo_mcp_server-main/charts/odoo-mcp
           [ -f "$C/Chart.yaml" ] || { echo "no Chart.yaml at $C"; exit 1; }
-          helm lint "$C" -f "$C/deploy/woow-k3s/komibright.yaml"
+          helm lint "$C" -f /tmp/tb/woow_odoo_mcp_server-main/deploy/woow-k3s/komibright.yaml
           helm template mcp-odoo "$C" -n komibright \
-            -f "$C/deploy/woow-k3s/komibright.yaml" > /tmp/tarball.yaml
+            -f /tmp/tb/woow_odoo_mcp_server-main/deploy/woow-k3s/komibright.yaml > /tmp/tarball.yaml
           diff /tmp/instance.yaml /tmp/tarball.yaml
           # And the READMEs must not regress to feeding the archive URL straight
           # to helm, which errors with "Chart.yaml file is missing".
@@ -140,6 +149,21 @@ jobs:
             fi
           done
           echo "tarball install path works and is documented in both READMEs"
+
+      - name: Instance values cannot override -n
+        run: |
+          # A top-level `namespace:` in an instance values file silently wins
+          # over `-n`, so a rehearsal aimed at a test namespace would write to
+          # the real tenant instead. Every rendered object must follow -n.
+          for f in deploy/woow-k3s/*.yaml; do
+            grep -Eq '^namespace:|^namespace:[[:space:]]' "$f" \
+              && { echo "$f sets a top-level namespace: - it would override -n"; exit 1; }
+            got=$(helm template t "$CHART" -n SENTINEL -f "$f" --skip-tests \
+                  | grep '^  namespace:' | sort -u)
+            [ "$got" = "  namespace: SENTINEL" ] \
+              || { echo "$f does not follow -n: $got"; exit 1; }
+          done
+          echo "every deploy/woow-k3s values file follows -n"
 
       - name: Chart patches match the repo patches
         run: |
@@ -174,7 +198,7 @@ jobs:
                   if d and d["kind"] == "Secret":
                       bad.append(f"{f} must not contain Secrets (secrets.create=false)")
           # Instance values files carry no credentials.
-          for f in glob.glob("charts/odoo-mcp/deploy/**/*.yaml", recursive=True):
+          for f in glob.glob("deploy/**/*.yaml", recursive=True):
               d = yaml.safe_load(open(f)) or {}
               sec = d.get("secrets") or {}
               px = (d.get("proxy") or {}).get("config") or {}

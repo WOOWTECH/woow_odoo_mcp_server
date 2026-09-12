@@ -13,4 +13,5 @@
 .vscode/
 README*.md
 examples/
-deploy/
+# Instance values live at the repo root (deploy/woow-k3s/<tenant>.yaml), outside
+# the chart directory, so they are never packaged in the first place.

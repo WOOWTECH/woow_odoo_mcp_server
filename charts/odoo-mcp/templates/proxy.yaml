@@ -65,6 +65,10 @@ spec:
       labels:
         app: {{ include "odoo-mcp.proxyName" . }}
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - image: {{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}
         imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}

@@ -36,7 +36,7 @@ clone 之後：
 
 ```bash
 helm install mcp-odoo charts/odoo-mcp -n <tenant> \
-  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml
+  -f deploy/woow-k3s/<tenant>.yaml
 ```
 
 不 clone，直接用 GitHub tarball。chart 放在子目錄，所以要先解開：
@@ -47,10 +47,10 @@ helm install mcp-odoo charts/odoo-mcp -n <tenant> \
 REF=main   # 任何 branch 或 tag
 curl -fsSL "https://github.com/WOOWTECH/woow_odoo_mcp_server/archive/refs/heads/${REF}.tar.gz" | tar -xz
 # GitHub 會用 ref 當解開後的目錄名，並把 / 換成 -
-CHART="woow_odoo_mcp_server-${REF//\//-}/charts/odoo-mcp"
+SRC="woow_odoo_mcp_server-${REF//\//-}"   # 解開後的 repo 目錄
 
-helm install mcp-odoo "$CHART" -n <tenant> \
-  -f "$CHART/deploy/woow-k3s/<tenant>.yaml"
+helm install mcp-odoo "$SRC/charts/odoo-mcp" -n <tenant> \
+  -f "$SRC/deploy/woow-k3s/<tenant>.yaml"
 ```
 
 用 tag 的話換成 `archive/refs/tags/${REF}.tar.gz`。CI 每次 push 都會重跑這條
@@ -91,6 +91,8 @@ MCP 端點會是
 | `admin.enabled` | `false` | `:8080` 的 FastAPI 管理後台 |
 | `networkPolicy.enabled` | `false` | 正式租戶已經有 namespace 層級的 policy |
 | `server.podAnnotations` | `{}` | 用來帶入正式環境的 `kubectl.kubernetes.io/restartedAt` 標記 |
+| `nodeSelector` | `{}` | 所有 Pod（含 `helm test` Pod）的節點選擇；留空時不會在正式 Pod template 上加任何欄位 |
+| `tests.timeoutSeconds` | `180` | smoke Pod 重試連線的上限秒數 |
 
 完整清單和註解在 [`values.yaml`](values.yaml)。
 
@@ -136,19 +138,42 @@ pull secret）複製進測試 namespace**；Helm 遷移 phase 1 的規則只允�
 一個真實的組織憑證（OpenRouter key，用在遷移計畫裡另一個功能測試），GHCR pull
 secret 不算在內。
 
-兩種不需要它也能測試的方法：
+真正跑得起 image、也是這份 chart 在 `woow-k3s` 上驗證時採用的做法：
 
-* **Chart 接線，用公開 image 頂替** — 設 `imagePullSecrets=null`，把
-  `image.repository`/`image.tag` 指到一個公開 image（例如 `busybox:latest`，
-  `busybox.image` 本來就用它跑 init container）。這樣不會真的跑起 server，但可以
-  證明每個 ConfigMap/Secret/PVC 掛載跟 container command 都接對了：pod 會執行到
-  `python3 -m odoo_mcp …`，只會因為 busybox 裡沒有這個指令而失敗，不是因為少掛
-  了什麼。
+* **把 Pod 釘在已經快取這個 image 的節點上。** 現在跑著租戶 MCP 的節點，
+  containerd 裡本來就有 `ghcr.io/woowtech/woow-odoo-mcp-server`；只要
+  `image.pullPolicy=IfNotPresent` 加上 `imagePullSecrets: []`，kubelet 完全不會
+  連 ghcr.io，也就不需要任何憑證：
+
+  ```bash
+  # 找一個今天就在跑 MCP pod 的節點
+  NODE=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.spec.containers[0].image}{"\n"}{end}' \
+         | grep woow-odoo-mcp-server | head -1 | cut -f1)
+
+  helm install mcp-odoo charts/odoo-mcp -n ht-odoo-mcp --create-namespace \
+    --set imagePullSecrets=null --set image.pullPolicy=IfNotPresent \
+    --set nodeSelector."kubernetes\.io/hostname"="$NODE" \
+    --set storageClassName=longhorn-delete \
+    --set odoo.url=http://odoo-stub.ht-odoo-mcp.svc.cluster.local:8069 \
+    --set odoo.db=testdb \
+    --set "server.allowedHosts={localhost,127.0.0.1,mcp-odoo.ht-odoo-mcp.svc.cluster.local,mcp-odoo-proxy.ht-odoo-mcp.svc.cluster.local}" \
+    --set secrets.create=true --set secrets.odooPassword="$(openssl rand -hex 16)" \
+    --set proxy.config.create=true --set proxy.config.authToken="$(openssl rand -hex 10)"
+
+  helm test mcp-odoo -n ht-odoo-mcp --logs
+  ```
+
+  所有 instance values 都沒有設 `nodeSelector`，所以它不會在正式 Pod template 上
+  加任何欄位。
+
+  `odoo.url` 請指向同一個測試 namespace 裡的 stub，不要指向真的租戶：MCP server
+  是延遲連線 Odoo 的，只要 stub 會回 `/xmlrpc/2/*` 跟 `/jsonrpc`，
+  `initialize` 和 `tools/list` 就能通。
+
 * **App 本身的行為，在叢集外驗證** — 在虛擬環境裡裝 Dockerfile 裝的同一個
   `odoo-mcp` 版本，套用 `files/patches/*.py`（不修改），直接跑
   `python3 -m odoo_mcp --transport streamable-http …`；另外用 `uvicorn` 跑
-  `odoo_mcp_admin`，打 `/healthz`。這樣就驗證了真正的 server 跟後台——MCP 的
-  handshake 跟健康檢查端點——完全不需要 private image 或正式環境的 pull 憑證。
+  `odoo_mcp_admin`，打 `/healthz`。完全不需要叢集。
 
 ---
 
@@ -193,7 +218,7 @@ annotation，不會動到 pod template，也不會 roll 任何東西。
 
 ```bash
 helm upgrade --install mcp-odoo charts/odoo-mcp -n <tenant> \
-  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml --take-ownership
+  -f deploy/woow-k3s/<tenant>.yaml --take-ownership
 ```
 
 接著確認沒有 pod 重啟（`kubectl get pods -o wide`，比對前後的 UID 和 restart 次數）。
@@ -235,3 +260,7 @@ values 檔並讓 `check-drift.sh` 回報乾淨；如果漂移只是形式上的�
    節點）。改成 `strategy: Recreate` 可以解決，但那會動到正式的 Deployment spec，所以不放
    進這版 chart。在那之前，這種租戶請用 `kubectl scale deploy/mcp-odoo --replicas=0`
    再調回 1 的方式重啟。
+8. **MCP server 沒有 readiness probe。** 正式環境的 Deployment 本來就沒有，所以
+   chart 也不加：`kubectl rollout status` 會在 uvicorn 還沒起來前就返回，Service
+   也會在連接埠還沒開之前就有 endpoint。`helm test` 的 smoke pod 用重試
+   （`tests.timeoutSeconds`）繞過這點。加上 probe 會改到正式的 Pod template。

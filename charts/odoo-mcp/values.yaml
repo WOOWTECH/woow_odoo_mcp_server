@@ -160,6 +160,9 @@ persistence:
 # password, the MCP token and the Odoo password in clear text, so it stays a
 # cluster object and never enters git. Moving it to a Secret is a follow-up.
 initConfig:
+  # Needs persistence.enabled=true - the seed is written into the data volume.
+  # The chart fails to render on enabled=true without it, rather than producing a
+  # pod that expects /data/config.json and has no /data.
   enabled: false
   existingConfigMap: mcp-admin-config
   # Copy unconditionally (live behaviour) or only when /data/config.json is

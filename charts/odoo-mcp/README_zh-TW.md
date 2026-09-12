@@ -32,11 +32,29 @@ Cloudflare Tunnel 都維持原狀。
 
 ## 安裝
 
+clone 之後：
+
 ```bash
-# clone 之後
 helm install mcp-odoo charts/odoo-mcp -n <tenant> \
   -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml
 ```
+
+不 clone，直接用 GitHub tarball。chart 放在子目錄，所以要先解開：
+`helm install <url>` 只吃 `Chart.yaml` 在壓縮檔根目錄的 chart，而 GitHub 的
+原始碼壓縮檔根目錄永遠不是 chart：
+
+```bash
+REF=main   # 任何 branch 或 tag
+curl -fsSL "https://github.com/WOOWTECH/woow_odoo_mcp_server/archive/refs/heads/${REF}.tar.gz" | tar -xz
+# GitHub 會用 ref 當解開後的目錄名，並把 / 換成 -
+CHART="woow_odoo_mcp_server-${REF//\//-}/charts/odoo-mcp"
+
+helm install mcp-odoo "$CHART" -n <tenant> \
+  -f "$CHART/deploy/woow-k3s/<tenant>.yaml"
+```
+
+用 tag 的話換成 `archive/refs/tags/${REF}.tar.gz`。CI 每次 push 都會重跑這條
+「解開再安裝」的路徑，所以這段指令不會腐爛。
 
 全新租戶，由 chart 產生憑證和 nginx 設定：
 
@@ -69,7 +87,7 @@ MCP 端點會是
 | `secrets.create` | `false` | `true` 時才從 `required()` 保護的 values 產生 Secret |
 | `proxy.config.create` | `false` | `true` 時才用 `proxy.config.authToken` 產生 nginx ConfigMap |
 | `persistence.enabled` | `false` | `/data` PVC（正式租戶是 1 Gi Longhorn） |
-| `initConfig.enabled` | `false` | 從既有 ConfigMap 播種 `/data/config.json` |
+| `initConfig.enabled` | `false` | 從既有 ConfigMap 播種 `/data/config.json`，需要 `persistence.enabled` |
 | `admin.enabled` | `false` | `:8080` 的 FastAPI 管理後台 |
 | `networkPolicy.enabled` | `false` | 正式租戶已經有 namespace 層級的 policy |
 | `server.podAnnotations` | `{}` | 用來帶入正式環境的 `kubectl.kubernetes.io/restartedAt` 標記 |
@@ -131,8 +149,16 @@ CONTEXT=woow-k3s NAMESPACE=komibright RELEASE=mcp-odoo scripts/check-drift.sh
 ```
 
 會讀出正式物件，逐欄位和 `helm template … -f deploy/woow-k3s/komibright.yaml`
-比對（兩邊都先正規化掉 API server 補的預設值，diff 裡的 proxy token 會被遮蔽）。
-komibright 目前的結果：**7/7 物件完全相同**。
+比對（兩邊都先正規化掉 API server 補的預設值，輸出裡的 proxy token 會被遮蔽）。
+每個物件會回報 `SAME`、`INTENDED`（只有宣告過、有理由的差異）、`DRIFT`（連差在哪個
+欄位一起印出來）或 `MISSING`。接著還有一道反方向的檢查：每個正式環境裡的 `mcp-*`
+物件都必須落在「已比對」或 `REFERENCED`（chart 只掛名字、刻意不擁有的
+`mcp-admin-config`、`mcp-odoo-proxy-config`、`mcp-admin-ghcr`、`mcp-odoo-secrets`），
+否則會被報成 `UNCOVERED` 並讓腳本失敗——chart 漏掉某個物件就藏不住。
+
+komibright 目前的結果：**7 個 SAME/INTENDED + 4 個 REFERENCED，exit 0**；把正式
+token 傳進來（`--set proxy.config.create=true --set proxy.config.authToken=…`）
+連 nginx ConfigMap 一起比就是 8/8。
 
 唯一一項刻意的差異：PVC 多了 `helm.sh/resource-policy: keep`。它是 metadata
 annotation，不會動到 pod template，也不會 roll 任何東西。

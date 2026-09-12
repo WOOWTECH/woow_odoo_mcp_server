@@ -8,6 +8,9 @@ standard tenant, so `helm template` with deploy/woow-k3s/<tenant>.yaml renders
 those objects exactly (see README "Takeover").
 */ -}}
 {{- if .Values.server.enabled }}
+{{- if and .Values.initConfig.enabled (not .Values.persistence.enabled) }}
+{{- fail "initConfig.enabled=true needs persistence.enabled=true: /data/config.json is seeded by an init container into the data volume, so without that volume the seed container is not rendered, /data is not mounted and MCP_ADMIN_CONFIG=/data/config.json would point at nothing" }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -84,6 +84,12 @@ jobs:
             --set persistence.enabled=true,initConfig.enabled=true,initConfig.existingConfigMap= \
             > /dev/null 2>&1 \
             && fail "initConfig.enabled=true rendered without existingConfigMap"
+          # initConfig needs a data volume: without one the seed container and the
+          # /data mount are not rendered at all, so this must fail loudly.
+          helm template mcp-odoo "$CHART" -n demo \
+            --set odoo.url=https://x,odoo.db=x,server.allowedHosts={x} \
+            --set initConfig.enabled=true > /dev/null 2>&1 \
+            && fail "initConfig.enabled=true rendered with persistence.enabled=false"
           echo "required() guards fire"
           # Both Secrets must render with secrets.create=true: catches
           # templates/secrets.yaml going missing from git.
@@ -107,6 +113,33 @@ jobs:
             esac
           done
           echo "every template renders in at least one combination"
+
+      - name: The documented tarball install path works
+        run: |
+          # README "Install" tells people to unpack a GitHub source archive and
+          # install from <dir>/charts/odoo-mcp, because `helm install <url>` only
+          # accepts an archive with Chart.yaml at its root. Reproduce that exact
+          # layout from this commit (no network) and install from it.
+          rm -rf /tmp/tb && mkdir -p /tmp/tb
+          git archive --format=tar --prefix=woow_odoo_mcp_server-main/ HEAD \
+            | tar -x -C /tmp/tb
+          C=/tmp/tb/woow_odoo_mcp_server-main/charts/odoo-mcp
+          [ -f "$C/Chart.yaml" ] || { echo "no Chart.yaml at $C"; exit 1; }
+          helm lint "$C" -f "$C/deploy/woow-k3s/komibright.yaml"
+          helm template mcp-odoo "$C" -n komibright \
+            -f "$C/deploy/woow-k3s/komibright.yaml" > /tmp/tarball.yaml
+          diff /tmp/instance.yaml /tmp/tarball.yaml
+          # And the READMEs must not regress to feeding the archive URL straight
+          # to helm, which errors with "Chart.yaml file is missing".
+          for f in "$CHART/README.md" "$CHART/README_zh-TW.md"; do
+            grep -q 'archive/refs/heads' "$f" \
+              || { echo "$f documents no tarball install"; exit 1; }
+            if grep -E 'helm (install|template)[^#]*archive/refs' "$f"; then
+              echo "$f pipes an archive URL straight into helm - that does not work"
+              exit 1
+            fi
+          done
+          echo "tarball install path works and is documented in both READMEs"
 
       - name: Chart patches match the repo patches
         run: |

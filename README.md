@@ -378,12 +378,12 @@ The configuration file is automatically created on first run at `/data/config.js
 ```json
 {
   "admin_password": "<seeded from ADMIN_PASSWORD on first boot>",
-  "mcp_auth_token": "a1b2c3d4e5f6...",
+  "mcp_auth_token": "<20 hex chars, generated on first boot>",
   "connection": {
     "odoo_url": "http://odoo:8069",
     "odoo_db": "mydb",
     "odoo_username": "admin",
-    "odoo_password": "secret"
+    "odoo_password": "<REPLACE_ME>"
   },
   "mcp_server": {
     "command": "odoo-mcp-server",
@@ -812,14 +812,23 @@ Deploy separate instances with different Odoo accounts for different permission 
 - name: ODOO_USERNAME
   value: "sales_mcp_user"
 - name: ODOO_PASSWORD
-  value: "sales_password"
+  valueFrom:
+    secretKeyRef:
+      name: mcp-odoo-secrets      # REPLACE_ME: your Secret
+      key: odoo-password
 
 # Instance for admin team (full access)
 - name: ODOO_USERNAME
   value: "admin"
 - name: ODOO_PASSWORD
-  value: "admin_password"
+  valueFrom:
+    secretKeyRef:
+      name: mcp-odoo-admin-secrets # REPLACE_ME: your Secret
+      key: odoo-password
 ```
+
+Never put an Odoo password in a manifest literal: keep it in a Secret and
+reference it, which is what `charts/odoo-mcp` does (`secrets.existingSecret`).
 
 Each instance gets its own MCP proxy token, so you can distribute different tokens to different teams.
 

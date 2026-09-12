@@ -369,12 +369,12 @@ npm run dev
 ```json
 {
   "admin_password": "<首次啟動時由 ADMIN_PASSWORD 播種>",
-  "mcp_auth_token": "a1b2c3d4e5f6...",
+  "mcp_auth_token": "<首次啟動時產生的 20 字元十六進位>",
   "connection": {
     "odoo_url": "http://odoo:8069",
     "odoo_db": "mydb",
     "odoo_username": "admin",
-    "odoo_password": "secret"
+    "odoo_password": "<REPLACE_ME>"
   },
   "mcp_server": {
     "command": "odoo-mcp-server",

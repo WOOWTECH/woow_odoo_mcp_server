@@ -33,16 +33,29 @@ itself: Odoo, PostgreSQL and the Cloudflare tunnel stay where they are.
 
 ## Install
 
+From a clone:
+
 ```bash
-# From a clone
 helm install mcp-odoo charts/odoo-mcp -n <tenant> \
   -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml
-
-# From a GitHub tarball
-helm install mcp-odoo \
-  https://github.com/WOOWTECH/woow_odoo_mcp_server/archive/refs/heads/main.tar.gz \
-  --set-file ... -n <tenant>
 ```
+
+From a GitHub tarball, without cloning. The chart lives in a subdirectory, so the
+archive has to be unpacked first — `helm install <url>` only accepts an archive
+whose `Chart.yaml` sits at the root, which a GitHub source archive never has:
+
+```bash
+REF=main   # any branch or tag
+curl -fsSL "https://github.com/WOOWTECH/woow_odoo_mcp_server/archive/refs/heads/${REF}.tar.gz" | tar -xz
+# GitHub names the extracted directory after the ref, with / replaced by -
+CHART="woow_odoo_mcp_server-${REF//\//-}/charts/odoo-mcp"
+
+helm install mcp-odoo "$CHART" -n <tenant> \
+  -f "$CHART/deploy/woow-k3s/<tenant>.yaml"
+```
+
+For a tag, use `archive/refs/tags/${REF}.tar.gz` instead. CI re-runs this
+unpack-then-install path on every push, so the snippet cannot rot.
 
 A brand-new tenant, with the chart creating the credentials and the nginx config:
 
@@ -75,7 +88,7 @@ which is what the tenant's Cloudflare tunnel points at.
 | `secrets.create` | `false` | `true` renders the Secrets from `required()`-guarded values |
 | `proxy.config.create` | `false` | `true` renders the nginx ConfigMap from `proxy.config.authToken` |
 | `persistence.enabled` | `false` | `/data` PVC (1 Gi Longhorn in the live tenants) |
-| `initConfig.enabled` | `false` | seed `/data/config.json` from an existing ConfigMap |
+| `initConfig.enabled` | `false` | seed `/data/config.json` from an existing ConfigMap; needs `persistence.enabled` |
 | `admin.enabled` | `false` | the FastAPI console on `:8080` |
 | `networkPolicy.enabled` | `false` | the live tenants already have a namespace-wide policy |
 | `server.podAnnotations` | `{}` | carries the live `kubectl.kubernetes.io/restartedAt` stamp |
@@ -143,11 +156,20 @@ CONTEXT=woow-k3s NAMESPACE=komibright RELEASE=mcp-odoo scripts/check-drift.sh
 
 reads the live objects and compares them field by field against
 `helm template … -f deploy/woow-k3s/komibright.yaml` (server defaults normalised
-away on both sides, proxy token redacted from any output). Current result for
-komibright: **7/7 objects identical.**
+away on both sides, proxy token redacted from any output). Each object comes back
+as `SAME`, `INTENDED` (only the declared, justified differences), `DRIFT` (with
+the differing fields printed) or `MISSING`. A second pass goes the other way
+round — every live `mcp-*` object must be either compared, `REFERENCED` (mounted
+by name and deliberately not owned: `mcp-admin-config`, `mcp-odoo-proxy-config`,
+`mcp-admin-ghcr`, `mcp-odoo-secrets`) or it is reported `UNCOVERED` and the script
+fails, so an object the chart forgets cannot hide.
 
-One intended difference: the PVC gains `helm.sh/resource-policy: keep`. It is a
-metadata annotation, so it changes no pod template and rolls nothing.
+Current result for komibright: **7 SAME/INTENDED + 4 REFERENCED, exit 0** — and
+8/8 when the nginx ConfigMap is included by passing the live token in
+(`--set proxy.config.create=true --set proxy.config.authToken=…`).
+
+The one intended difference: the PVC gains `helm.sh/resource-policy: keep`. It is
+a metadata annotation, so it changes no pod template and rolls nothing.
 
 When the comparison is clean, adopt with:
 

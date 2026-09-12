@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -31,9 +32,40 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_PATH = "/data/config.json"
 
-# Default config seeded on first run
+
+def _seed_admin_password() -> str:
+    """First-boot admin password: ``ADMIN_PASSWORD``, else a random one.
+
+    There is deliberately NO built-in default. A shipped default password is a
+    published credential, and because ``/data`` is often not persistent the old
+    ``"admin"`` default came back on every container restart - so the operator's
+    own password silently stopped working while a documented one kept working.
+
+    Set ``ADMIN_PASSWORD`` (the Helm chart takes it from a Secret). Without it a
+    random password is generated and nobody - including this log - can read it,
+    so the console has to be re-seeded on purpose.
+    """
+    env = os.environ.get("ADMIN_PASSWORD")
+    if env:
+        return env
+    logger.warning(
+        "ADMIN_PASSWORD is not set: seeding %s with a random admin password. "
+        "Set ADMIN_PASSWORD (or write admin_password into the config file) to "
+        "be able to log in.",
+        os.environ.get("MCP_ADMIN_CONFIG", _DEFAULT_CONFIG_PATH),
+    )
+    return secrets.token_urlsafe(24)
+
+
+def _seed_mcp_auth_token() -> str:
+    """First-boot MCP proxy token: ``MCP_AUTH_TOKEN``, else empty (rotate later)."""
+    return os.environ.get("MCP_AUTH_TOKEN", "")
+
+
+# Default config seeded on first run. admin_password / mcp_auth_token are filled
+# in by _default_config() so they are never constants in the source tree.
 _DEFAULT_CONFIG: dict[str, Any] = {
-    "admin_password": "admin",
+    "admin_password": "",
     "mcp_auth_token": "",
     "connection": {},
     "tools": {
@@ -51,6 +83,14 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     },
     "token_history": [],
 }
+
+
+def _default_config() -> dict[str, Any]:
+    """A fresh copy of the default config with the credentials seeded."""
+    cfg = json.loads(json.dumps(_DEFAULT_CONFIG))
+    cfg["admin_password"] = _seed_admin_password()
+    cfg["mcp_auth_token"] = _seed_mcp_auth_token()
+    return cfg
 
 
 class ConfigStore:
@@ -75,7 +115,7 @@ class ConfigStore:
         if self._path.exists():
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(_DEFAULT_CONFIG, indent=2))
+        self._path.write_text(json.dumps(_default_config(), indent=2))
         logger.info("Created default config at %s", self._path)
 
     def _read_sync(self) -> dict[str, Any]:
@@ -90,7 +130,7 @@ class ConfigStore:
             return merged
         except (json.JSONDecodeError, FileNotFoundError) as exc:
             logger.warning("Config read failed (%s), using defaults", exc)
-            return dict(_DEFAULT_CONFIG)
+            return _default_config()
 
     def _write_sync(self, data: dict[str, Any]) -> None:
         """Write config to file (synchronous)."""

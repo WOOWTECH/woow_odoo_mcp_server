@@ -1,0 +1,24 @@
+odoo-mcp {{ .Chart.Version }} installed as release {{ .Release.Name }} in namespace {{ include "odoo-mcp.ns" . }}.
+
+Objects:
+{{- if .Values.server.enabled }}
+  Deployment/{{ include "odoo-mcp.name" . }}            odoo-mcp -> {{ .Values.odoo.url }} (db {{ .Values.odoo.db }})
+  Service/{{ include "odoo-mcp.name" . }}:{{ .Values.server.port }}
+{{- end }}
+{{- if .Values.proxy.enabled }}
+  Deployment/{{ include "odoo-mcp.proxyName" . }}       nginx token gate
+  Service/{{ include "odoo-mcp.proxyName" . }}:{{ .Values.proxy.port }}  (ConfigMap {{ include "odoo-mcp.proxyConfigMap" . }})
+{{- end }}
+{{- if .Values.admin.enabled }}
+  Deployment/{{ include "odoo-mcp.adminName" . }}       admin console :{{ .Values.admin.port }}
+{{- end }}
+
+Verify:
+  kubectl -n {{ include "odoo-mcp.ns" . }} rollout status deploy/{{ include "odoo-mcp.name" . }}
+  helm test {{ .Release.Name }} -n {{ include "odoo-mcp.ns" . }} --logs
+
+The MCP endpoint is http://{{ include "odoo-mcp.proxyName" . }}:{{ .Values.proxy.port }}/private_<token>{{ .Values.server.path }}
+The token is NOT printed here: read it from ConfigMap {{ include "odoo-mcp.proxyConfigMap" . }}.
+
+`helm uninstall` keeps the namespace, the PVC and any chart-created Secret
+(keepOnUninstall={{ .Values.keepOnUninstall }}).

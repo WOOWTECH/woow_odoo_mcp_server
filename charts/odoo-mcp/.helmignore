@@ -1,0 +1,16 @@
+# Patterns to ignore when building Helm packages.
+# files/ must stay in: templates read files/patches/*.py with .Files.Glob.
+.DS_Store
+.git/
+.gitignore
+.github/
+.helmignore
+*.tgz
+*.bak
+*.tmp
+*.swp
+.idea/
+.vscode/
+README*.md
+examples/
+deploy/

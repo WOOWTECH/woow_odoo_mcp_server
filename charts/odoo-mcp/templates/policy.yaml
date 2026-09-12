@@ -1,0 +1,26 @@
+{{- /*
+Side-effect allow-list mounted at ODOO_MCP_POLICY_FILE. Methods NOT listed here
+are refused by the MCP server even when writes are enabled, so this file - not
+the GUI toggles - is the precise lever for what an agent may trigger in Odoo.
+*/ -}}
+{{- if and .Values.server.enabled .Values.policy.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "odoo-mcp.policyConfigMap" . }}
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with (include "odoo-mcp.labels" .) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+data:
+  odoo_mcp_policy.json: |
+    {
+      "allowed_side_effect_methods": [
+    {{- $last := sub (len .Values.policy.allowedSideEffectMethods) 1 }}
+    {{- range $i, $m := .Values.policy.allowedSideEffectMethods }}
+        {{ $m | quote }}{{ if ne $i $last }},{{ end }}
+    {{- end }}
+      ]
+    }
+{{- end }}

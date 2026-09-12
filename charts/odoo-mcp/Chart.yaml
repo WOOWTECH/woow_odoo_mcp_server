@@ -1,0 +1,22 @@
+apiVersion: v2
+name: odoo-mcp
+description: >-
+  WOOWTECH Odoo MCP server for one Odoo tenant on K3s: the patched odoo-mcp
+  streamable-HTTP server, an nginx token gate in front of it, the side-effect
+  policy file, and an optional admin console. One release per Odoo instance.
+type: application
+version: 1.0.0
+appVersion: "latest"
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - mcp
+  - odoo
+  - model-context-protocol
+  - woowtech
+home: https://github.com/WOOWTECH/woow_odoo_mcp_server
+sources:
+  - https://github.com/WOOWTECH/woow_odoo_mcp_server
+  - https://github.com/tuanle96/mcp-odoo
+maintainers:
+  - name: WoowTech
+    url: https://github.com/WOOWTECH

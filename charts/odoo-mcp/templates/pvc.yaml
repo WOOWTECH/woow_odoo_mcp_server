@@ -1,0 +1,23 @@
+{{- /*
+/data for the MCP server and the admin console. Carries helm.sh/resource-policy:
+keep, so `helm uninstall` leaves the tenant's console config.json behind.
+*/ -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.persistence.name }}
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with (include "odoo-mcp.labels" .) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+  {{- include "odoo-mcp.keepAnnotations" . | nindent 2 }}
+spec:
+  accessModes:
+  - {{ .Values.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+  storageClassName: {{ include "odoo-mcp.storageClass" (list . .Values.persistence.className) }}
+{{- end }}

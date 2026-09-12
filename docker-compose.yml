@@ -1,11 +1,14 @@
-version: "3.8"
-
+# Local full stack: PostgreSQL + Odoo 18 + MCP Admin.
+#
+# No passwords are committed here. Copy .env.example to .env, fill it in, then
+# `docker compose up -d`. Compose fails fast with a clear message if a required
+# value is missing - it will not fall back to a default.
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: odoo
-      POSTGRES_PASSWORD: odoo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
       POSTGRES_DB: odoo
     volumes:
       - pg_data:/var/lib/postgresql/data
@@ -23,7 +26,7 @@ services:
     environment:
       HOST: postgres
       USER: odoo
-      PASSWORD: odoo
+      PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
     ports:
       - "8069:8069"
 
@@ -37,6 +40,17 @@ services:
       - mcp_data:/data
     environment:
       MCP_ADMIN_CONFIG: /data/config.json
+      # First-boot seeds for /data/config.json. Without ADMIN_PASSWORD the
+      # console generates a random password that nobody can read.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env (see .env.example)}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      # Without JWT_SECRET every restart invalidates all sessions.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (see .env.example)}
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=5)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
 volumes:
   pg_data:

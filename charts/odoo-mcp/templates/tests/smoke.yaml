@@ -1,0 +1,113 @@
+{{- /*
+`helm test` smoke pod. READ-ONLY: it opens HTTP connections and reads the nginx
+ConfigMap it is given; it never writes to Odoo and never calls a tool that has a
+side effect.
+
+  1. the MCP server answers on :{{ .Values.server.port }} - an unauthenticated
+     GET on the MCP path must NOT be a connection error (the streamable-HTTP
+     endpoint answers 400/405/406 to a bare GET, which is proof it is serving)
+  2. the proxy returns 403 for every path outside /private_<token>/
+  3. the proxy forwards /private_<token>{{ .Values.server.path }} to the server
+  4. the admin console answers GET /healthz with 200 (when admin.enabled)
+
+The token is read from the mounted ConfigMap, never passed as an argument, so it
+cannot end up in `kubectl describe` or in an audit log.
+*/ -}}
+{{- if .Values.tests.enabled }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-smoke
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with .Values.extraLabels }}
+  labels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  annotations:
+    helm.sh/hook: test
+    # Kept until the next `helm test` so `helm test --logs` can always read it.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: smoke
+      image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command: [python3, -c]
+      args:
+        - |
+          import os, re, sys, urllib.error, urllib.request
+
+          def status(url, method="GET"):
+              req = urllib.request.Request(url, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return r.status, r.read(2000).decode("utf-8", "replace")
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read(2000).decode("utf-8", "replace")
+
+          server = os.environ.get("SERVER_URL")
+          if server:
+              code, _ = status(server)
+              assert code, code
+              print("mcp server %s -> HTTP %s (serving)" % (server, code))
+
+          proxy = os.environ.get("PROXY_URL")
+          if proxy:
+              code, body = status(proxy + "/")
+              assert code == 403, "proxy root should be 403, got %s %s" % (code, body)
+              print("proxy root -> 403 (token required)")
+              conf = open("/nginx/nginx.conf").read()
+              m = re.search(r"location /private_([^/]+)/", conf)
+              assert m, "no /private_<token>/ location in the proxy config"
+              code, _ = status("%s/private_%s%s" % (proxy, m.group(1), os.environ["MCP_PATH"]))
+              assert code != 403, "proxy did not forward the tokenised path"
+              print("proxy /private_***%s -> HTTP %s (forwarded)" % (os.environ["MCP_PATH"], code))
+
+          admin = os.environ.get("ADMIN_URL")
+          if admin:
+              code, body = status(admin + "/healthz")
+              assert code == 200, "admin /healthz %s %s" % (code, body)
+              print("admin /healthz -> 200", body.strip()[:120])
+
+          print("SMOKE OK")
+      env:
+        {{- if .Values.server.enabled }}
+        - name: SERVER_URL
+          value: http://{{ include "odoo-mcp.name" . }}:{{ .Values.server.port }}{{ .Values.server.path }}
+        {{- end }}
+        {{- if .Values.proxy.enabled }}
+        - name: PROXY_URL
+          value: http://{{ include "odoo-mcp.proxyName" . }}:{{ .Values.proxy.port }}
+        {{- end }}
+        - name: MCP_PATH
+          value: {{ .Values.server.path }}
+        {{- if .Values.admin.enabled }}
+        - name: ADMIN_URL
+          value: http://{{ include "odoo-mcp.adminName" . }}:{{ .Values.admin.port }}
+        {{- end }}
+      {{- if .Values.proxy.enabled }}
+      volumeMounts:
+        - mountPath: /nginx
+          name: nginx-config
+          readOnly: true
+      {{- end }}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+  {{- if .Values.proxy.enabled }}
+  volumes:
+    - name: nginx-config
+      configMap:
+        name: {{ include "odoo-mcp.proxyConfigMap" . }}
+  {{- end }}
+{{- end }}

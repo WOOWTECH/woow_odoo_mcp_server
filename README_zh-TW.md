@@ -217,7 +217,9 @@ docker run -d --name mcp-admin \
   ghcr.io/woowtech/woow-odoo-mcp-server:latest
 ```
 
-開啟 `http://localhost:8080`，使用預設密碼 `admin` 登入。
+開啟 `http://localhost:8080`，用你傳進去的 `ADMIN_PASSWORD` 登入。沒有內建預設密碼：
+首次啟動時若沒設 `ADMIN_PASSWORD`，後台會產生一組沒人讀得到的隨機密碼，就得重建
+`/data/config.json` 才能進得去。
 
 ### Docker Compose（完整堆疊）
 
@@ -242,7 +244,7 @@ Odoo 初始化完成後，開啟 `http://localhost:8080` 設定連線：
 - **Odoo URL**：`http://odoo:8069`
 - **資料庫**：`odoo`
 - **使用者名稱**：`admin`
-- **密碼**：`admin`
+- **密碼**：你在 `.env` 裡設的 `POSTGRES_PASSWORD`
 
 ---
 
@@ -290,28 +292,45 @@ docker compose up -d
 docker compose up -d mcp-admin
 ```
 
-### 方式四：Kubernetes (K3s)
+### 方式四：Kubernetes (K3s) — Helm chart
 
-部署至 Kubernetes 叢集，含 RBAC、健康檢查和資源限制：
+[`charts/odoo-mcp`](charts/odoo-mcp/README_zh-TW.md) 佈署單一 Odoo 租戶的 MCP
+server：套過 patch 的 `odoo-mcp` streamable-HTTP server、擋在前面的 nginx token
+閘門、副作用政策檔，以及選用的本後台。
 
 ```bash
-# 套用部署清單（依需求調整 namespace）
-kubectl apply -f k8s-deploy.yaml
+# 全新租戶。repo 裡不存放任何祕密。
+ODOO_PASSWORD=...
+MCP_AUTH_TOKEN=$(python3 -c 'import secrets;print(secrets.token_hex(10))')
 
-# 確認部署狀態
-kubectl get pods -n kasim-odoo -l app=odoo-mcp-admin
+helm install mcp-odoo charts/odoo-mcp -n <tenant> --create-namespace \
+  --set odoo.url=https://<tenant>-odoo.woowtech.io \
+  --set odoo.db=<tenant> \
+  --set "server.allowedHosts={<tenant>-mcp-odoo.woowtech.io,localhost,mcp-odoo-proxy.<tenant>.svc.cluster.local,mcp-odoo.<tenant>.svc.cluster.local,127.0.0.1}" \
+  --set secrets.create=true --set secrets.odooPassword="$ODOO_PASSWORD" \
+  --set proxy.config.create=true --set proxy.config.authToken="$MCP_AUTH_TOKEN"
 
-# 本機 port-forward 存取
-kubectl port-forward -n kasim-odoo svc/odoo-mcp-admin-svc 8080:9001
+# 已經存在的租戶（不含祕密的 values 放在 repo 裡）
+helm install mcp-odoo charts/odoo-mcp -n komibright \
+  -f charts/odoo-mcp/deploy/woow-k3s/komibright.yaml
+
+helm test mcp-odoo -n <tenant> --logs
 ```
 
-K8s 部署包含：
+chart 包含：
 
-- **ServiceAccount**，namespace 範圍的 RBAC（Secrets、ConfigMaps、Pods、Deployments）
-- **就緒探針** `/healthz`（初始延遲 5 秒，間隔 10 秒）
-- **存活探針** `/healthz`（初始延遲 15 秒，間隔 30 秒）
+- 後台的 **就緒／存活探針** `/healthz`
 - **資源限制**：100m-500m CPU、128Mi-512Mi 記憶體
-- **control-plane nodeSelector** 確保可預測的排程
+- **`helm uninstall` 不會刪資料**：Namespace、PVC 和 chart 產生的 Secret 都帶
+  `helm.sh/resource-policy: keep`
+- **憑證不進 git**：預設 `secrets.create=false`，MCP proxy token 留在叢集的 ConfigMap
+- **唯讀的 `helm test` smoke pod**
+- **沒有 ServiceAccount**：後台從來不呼叫 Kubernetes API，所以不像舊的
+  `k8s-deploy.yaml` 那樣給它讀取整個 namespace 所有 Secret 的權限
+
+> 根目錄的 `k8s-deploy.yaml` 已經移除。那是某次手動套用到單一 namespace 的 manifest
+> 副本，引用的 image 不是本 repo 建的，開的是 `9001`/`9002` 而 image 只聽 `8080`，
+> 而且還同時定義了另一個產品（`n8n-mcp-admin`），套用下去會一併覆蓋掉它。
 
 ### 方式五：開發模式
 
@@ -336,7 +355,7 @@ npm run dev
 
 啟動容器後：
 
-1. **登入** — 瀏覽 `http://localhost:8080`，輸入管理員密碼（預設：`admin`）
+1. **登入** — 瀏覽 `http://localhost:8080`，輸入管理員密碼（首次啟動由 `ADMIN_PASSWORD` 播種，沒有預設值）
 2. **連線設定** — 進入連線頁面，填入 Odoo URL、資料庫、使用者名稱和密碼，點擊**測試連線**
 3. **工具管理** — 瀏覽全部 39 個 MCP 工具，依需求切換啟用/停用
 4. **Token 管理** — 點擊**輪換 Token** 產生 MCP 認證 Token — 請妥善保存，供 MCP 用戶端設定使用
@@ -349,7 +368,7 @@ npm run dev
 
 ```json
 {
-  "admin_password": "admin",
+  "admin_password": "<首次啟動時由 ADMIN_PASSWORD 播種>",
   "mcp_auth_token": "a1b2c3d4e5f6...",
   "connection": {
     "odoo_url": "http://odoo:8069",
@@ -419,7 +438,7 @@ claude mcp add odoo --transport sse \
   <img src="docs/screenshots/login.png" alt="登入頁面" width="720"/>
 </p>
 
-JWT 認證機制。預設密碼為 `admin`。支援 Cookie 和 Authorization Header 認證。
+JWT 認證機制。密碼在首次啟動時由 `ADMIN_PASSWORD` 播種，沒有預設密碼。支援 Cookie 和 Authorization Header 認證。
 
 ### 儀表板
 
@@ -541,7 +560,7 @@ JWT 認證機制。預設密碼為 `admin`。支援 Cookie 和 Authorization Hea
 ### 認證機制
 
 - **JWT 認證**，可設定到期時間（預設：24 小時）
-- 管理員密碼儲存於 `config.json`（請在首次登入後立即更改預設密碼）
+- 管理員密碼儲存於 `config.json`（首次啟動由 `ADMIN_PASSWORD` 播種，沒有預設值）
 - 若未設定 `JWT_SECRET` 環境變數，啟動時自動產生 JWT 金鑰
 - Cookie 認證搭配 `httponly`、`samesite=strict` 旗標
 - SSE 端點支援 query parameter Token，相容 EventSource
@@ -563,7 +582,7 @@ JWT 認證機制。預設密碼為 `admin`。支援 Cookie 和 Authorization Hea
 
 ### 安全最佳實務
 
-1. **首次登入後立即更改預設管理員密碼**
+1. **首次啟動前先設好 `ADMIN_PASSWORD` 和 `JWT_SECRET`**；沒有 `JWT_SECRET` 的話每次重啟都會讓所有登入失效
 2. **設定 `JWT_SECRET` 環境變數**，確保 Token 在容器重啟後持續有效
 3. **正式環境限制 CORS 來源**
 4. **使用 Kubernetes NetworkPolicy** 限制 Pod 間通訊
@@ -679,7 +698,11 @@ woow_odoo_mcp_server/
 │   └── screenshots/             # 介面截圖
 ├── Dockerfile                   # 多階段建置（Node + Python）
 ├── docker-compose.yml           # 完整堆疊：PostgreSQL + Odoo + Admin
-├── k8s-deploy.yaml              # Kubernetes 部署清單
+├── charts/
+│   └── odoo-mcp/                # Helm chart：單一 Odoo 租戶的 MCP server
+├── scripts/
+│   └── check-drift.sh           # chart 與正式物件逐欄位比對
+├── .env.example                 # 本機堆疊的憑證（值留空）
 ├── pyproject.toml               # Python 套件設定
 ├── LICENSE                      # MIT 授權
 ├── CONTRIBUTING.md              # 貢獻指南

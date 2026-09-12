@@ -3,12 +3,27 @@ __pycache__/
 .pytest_cache/
 node_modules/
 dist/
-.env
-.env.local
 *.egg-info/
-/data/
 .ruff_cache/
 .mypy_cache/
 *.whl
-*.tar.gz
 .DS_Store
+
+# Real secrets must never be committed - only charts/odoo-mcp/examples/*.example.yaml
+# and .env.example. Every pattern here is anchored to the repo root with a
+# leading "/" on purpose: an unanchored "secrets.yaml" would also match
+# charts/odoo-mcp/templates/secrets.yaml and silently keep the chart's own
+# Secret template out of git. Never drop the anchor.
+/.env
+/.env.*
+!/.env.example
+/secrets.yaml
+/*-secrets.yaml
+/*.secret.yaml
+/*secrets.values.yaml
+/*.local.yaml
+/data/
+
+# Packaged charts and archives
+*.tgz
+*.tar.gz

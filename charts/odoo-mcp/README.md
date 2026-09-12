@@ -1,0 +1,194 @@
+# charts/odoo-mcp
+
+Helm chart for **one Odoo tenant's MCP server** on K3s. It replaces the old
+root-level `k8s-deploy.yaml`, which was a copy of a manifest applied by hand to a
+single namespace (`kasim-odoo`), pinned an image this repo does not build, and
+had already drifted away from every running tenant.
+
+[正體中文](README_zh-TW.md)
+
+One release per Odoo instance. The chart is independent of the Odoo tenant
+itself: Odoo, PostgreSQL and the Cloudflare tunnel stay where they are.
+
+---
+
+## What it deploys
+
+| Object | Name | Purpose |
+|---|---|---|
+| Deployment + Service | `mcp-odoo` | `python3 -m odoo_mcp`, streamable HTTP on `:8000/mcp`, after `patches/*.py` are applied at start |
+| Deployment + Service | `mcp-odoo-proxy` | nginx token gate: only `/private_<token>/…` is forwarded, everything else is `403` |
+| ConfigMap | `mcp-odoo-proxy-config` | the nginx config (contains the token — **not** rendered by default) |
+| ConfigMap | `mcp-odoo-policy` | `odoo_mcp_policy.json`, the side-effect allow-list |
+| ConfigMap | `mcp-odoo-patch` | the three WOOWTECH patches, mounted at `/app/patches` |
+| PersistentVolumeClaim | `mcp-admin-data` | `/data` (optional) |
+| Deployment + Service | `mcp-odoo-admin` | the FastAPI console from this repo (optional, off by default) |
+| Secret | `mcp-odoo-secrets`, `mcp-odoo-admin-secret` | only with `secrets.create=true` |
+| NetworkPolicy | `mcp-odoo-deny-external` | optional, off by default |
+
+`baseName` renames all of them at once (a second MCP for another database is
+`baseName: mcp-odoo-social`).
+
+---
+
+## Install
+
+```bash
+# From a clone
+helm install mcp-odoo charts/odoo-mcp -n <tenant> \
+  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml
+
+# From a GitHub tarball
+helm install mcp-odoo \
+  https://github.com/WOOWTECH/woow_odoo_mcp_server/archive/refs/heads/main.tar.gz \
+  --set-file ... -n <tenant>
+```
+
+A brand-new tenant, with the chart creating the credentials and the nginx config:
+
+```bash
+ODOO_PASSWORD=...            # the Odoo login the MCP uses
+MCP_AUTH_TOKEN=$(python3 -c 'import secrets;print(secrets.token_hex(10))')
+
+helm install mcp-odoo charts/odoo-mcp -n <tenant> --create-namespace \
+  --set odoo.url=https://<tenant>-odoo.woowtech.io \
+  --set odoo.db=<tenant> \
+  --set "server.allowedHosts={<tenant>-mcp-odoo.woowtech.io,localhost,mcp-odoo-proxy.<tenant>.svc.cluster.local,mcp-odoo.<tenant>.svc.cluster.local,127.0.0.1}" \
+  --set secrets.create=true --set secrets.odooPassword="$ODOO_PASSWORD" \
+  --set proxy.config.create=true --set proxy.config.authToken="$MCP_AUTH_TOKEN"
+```
+
+The MCP endpoint is then
+`http://mcp-odoo-proxy.<tenant>.svc.cluster.local:8001/private_<token>/mcp`,
+which is what the tenant's Cloudflare tunnel points at.
+
+### Key values
+
+| Value | Default | Notes |
+|---|---|---|
+| `odoo.url`, `odoo.db` | — | **required**, no default |
+| `server.allowedHosts` | `[]` | **required**; an empty list makes every request fail the DNS-rebinding check |
+| `baseName` | `mcp-odoo` | prefix for every object |
+| `namespace.create` / `.name` | `false` / release ns | a namespace equal to the release namespace is never rendered |
+| `keepOnUninstall` | `true` | `helm.sh/resource-policy: keep` on Namespace, PVC and chart-created Secrets |
+| `storageClassName` | `longhorn` | `longhorn-delete` for throwaway tests, `local-path` on the laptop cluster |
+| `secrets.create` | `false` | `true` renders the Secrets from `required()`-guarded values |
+| `proxy.config.create` | `false` | `true` renders the nginx ConfigMap from `proxy.config.authToken` |
+| `persistence.enabled` | `false` | `/data` PVC (1 Gi Longhorn in the live tenants) |
+| `initConfig.enabled` | `false` | seed `/data/config.json` from an existing ConfigMap |
+| `admin.enabled` | `false` | the FastAPI console on `:8080` |
+| `networkPolicy.enabled` | `false` | the live tenants already have a namespace-wide policy |
+| `server.podAnnotations` | `{}` | carries the live `kubectl.kubernetes.io/restartedAt` stamp |
+
+Full list with comments: [`values.yaml`](values.yaml).
+
+### Secrets
+
+`secrets.create: false` is the default: the chart **references** Secrets that
+already exist, so no upgrade can overwrite a real password with an empty string.
+Keys and placeholders: [`examples/secrets.example.yaml`](examples/secrets.example.yaml).
+
+Two things never enter git:
+
+* the Odoo password — Secret `mcp-odoo-secrets`, key `odoo-password`;
+* the MCP proxy token — it is part of the nginx `location /private_<token>/`, so
+  `proxy.config.create` is `false` and the chart mounts the ConfigMap that is
+  already in the cluster. See [`examples/proxy-token.example.yaml`](examples/proxy-token.example.yaml).
+
+`/data/config.json` in the live tenants (ConfigMap `mcp-admin-config`) holds the
+console password, the MCP token and the Odoo password in clear text. The chart
+**mounts** it and never renders it. Moving it to a Secret is a follow-up.
+
+---
+
+## Verify
+
+```bash
+kubectl -n <tenant> rollout status deploy/mcp-odoo
+kubectl -n <tenant> rollout status deploy/mcp-odoo-proxy
+helm test mcp-odoo -n <tenant> --logs
+```
+
+`helm test` runs a read-only smoke pod: the MCP server answers on `:8000`, the
+proxy returns `403` without a token and forwards `/private_<token>/mcp` with one,
+and the console answers `GET /healthz` when it is enabled. It reads the token
+from the mounted ConfigMap, so the token never appears in a pod spec or an
+audit log.
+
+---
+
+## Uninstall (data is kept)
+
+```bash
+helm uninstall mcp-odoo -n <tenant>
+```
+
+With `keepOnUninstall: true` (the default) the Namespace, the PVC and any
+chart-created Secret carry `helm.sh/resource-policy: keep` and survive. Only the
+Deployments, Services and the policy/patch ConfigMaps go away. The Odoo tenant is
+untouched: the chart never owns Odoo, PostgreSQL or the tunnel.
+
+To remove the data too, delete the PVC by hand afterwards.
+
+---
+
+## Takeover of a running tenant
+
+The live tenants were created with `kubectl apply`, not Helm. The chart renders
+those objects **exactly**, so adopting one restarts nothing:
+
+```bash
+CONTEXT=woow-k3s NAMESPACE=komibright RELEASE=mcp-odoo scripts/check-drift.sh
+```
+
+reads the live objects and compares them field by field against
+`helm template … -f deploy/woow-k3s/komibright.yaml` (server defaults normalised
+away on both sides, proxy token redacted from any output). Current result for
+komibright: **7/7 objects identical.**
+
+One intended difference: the PVC gains `helm.sh/resource-policy: keep`. It is a
+metadata annotation, so it changes no pod template and rolls nothing.
+
+When the comparison is clean, adopt with:
+
+```bash
+helm upgrade --install mcp-odoo charts/odoo-mcp -n <tenant> \
+  -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml --take-ownership
+```
+
+Then confirm no pod restarted (`kubectl get pods -o wide`, compare UIDs and
+restart counts before and after).
+
+### Instance values
+
+`deploy/woow-k3s/<tenant>.yaml` holds one tenant's values, with no secrets.
+Currently shipped: **komibright** — the standard shape.
+
+The other tenants each drifted in their own direction after they were applied
+(different env subsets, `emptyDir` instead of a PVC, the proxy volume named
+`conf` instead of `config`, patches applied in some and not in others). Before a
+tenant can be adopted, its values file has to be written and `check-drift.sh` has
+to come back clean; where the drift is cosmetic, normalising the live object
+first is the smaller change.
+
+---
+
+## Follow-ups (deliberately NOT in this chart)
+
+These would change a running pod template, so they stay opt-in and off:
+
+1. **`/data/config.json` holds credentials in a ConfigMap.** `initConfig.keepExisting: true`
+   at least stops every restart from reverting a rotated console password and MCP
+   token; moving the file into a Secret is the real fix.
+2. **`imagePullPolicy: Always` on `:latest`.** The GHCR package publishes only
+   `latest`, so any restart can silently change the running version — the drift
+   this repo has already been bitten by. Pin a digest once the image is built by CI.
+3. **No `securityContext`.** The image runs as root and the pod spec sets nothing
+   (`runAsNonRoot`, `readOnlyRootFilesystem`, dropped capabilities).
+4. **`automountServiceAccountToken`** is disabled on the console only. The MCP
+   server pods still mount the default token.
+5. **The MCP token travels in the URL path** and nginx logs the full request line,
+   so anyone who can read the proxy's logs can read the token.
+6. **`ODOO_MCP_ALLOW_UNKNOWN_METHODS=1`** in komibright widens the side-effect
+   gate past `mcp-odoo-policy`. Narrowing it is a tenant decision, not a chart
+   default.

@@ -1,0 +1,99 @@
+{{- /*
+nginx token gate. The MCP server itself has no authentication: everything
+reaching :8000 can call every tool the policy allows. The proxy publishes a
+single secret path, /private_<token>/, and answers 403 everywhere else, so the
+token is what stands between the internet (through the tenant's Cloudflare
+tunnel) and the tenant's Odoo database.
+
+The rendered nginx.conf therefore CONTAINS that token. proxy.config.create is
+false by default: the live ConfigMap stays a cluster object and the token never
+enters git.
+*/ -}}
+{{- if .Values.proxy.enabled }}
+{{- if .Values.proxy.config.create }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "odoo-mcp.proxyConfigMap" . }}
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with (include "odoo-mcp.labels" .) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+data:
+  nginx.conf: |
+    events { worker_connections 1024; }
+    http {
+      server {
+        listen {{ .Values.proxy.port }};
+        location /private_{{ include "odoo-mcp.authToken" . }}/ {
+          rewrite ^/private_{{ include "odoo-mcp.authToken" . }}/(.*) /$1 break;
+          proxy_pass http://{{ include "odoo-mcp.name" . }}:{{ .Values.server.port }};
+          proxy_set_header Host localhost;
+          proxy_set_header Connection '';
+          proxy_http_version 1.1;
+          chunked_transfer_encoding off;
+          proxy_buffering off;
+          proxy_cache off;
+          proxy_read_timeout {{ .Values.proxy.readTimeout }};
+          proxy_send_timeout {{ .Values.proxy.sendTimeout }};
+        }
+        location / { return 403 '{"error":"token required"}'; }
+      }
+    }
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "odoo-mcp.proxyName" . }}
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with (include "odoo-mcp.labels" .) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.proxy.replicas }}
+  selector:
+    matchLabels:
+      app: {{ include "odoo-mcp.proxyName" . }}
+  template:
+    metadata:
+      {{- with .Values.proxy.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        app: {{ include "odoo-mcp.proxyName" . }}
+    spec:
+      containers:
+      - image: {{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}
+        imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+        name: nginx
+        ports:
+        - containerPort: {{ .Values.proxy.port }}
+        resources:
+          {{- toYaml .Values.proxy.resources | nindent 10 }}
+        volumeMounts:
+        - mountPath: /etc/nginx/nginx.conf
+          name: config
+          subPath: nginx.conf
+      volumes:
+      - configMap:
+          name: {{ include "odoo-mcp.proxyConfigMap" . }}
+        name: config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "odoo-mcp.proxyName" . }}
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with (include "odoo-mcp.labels" .) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+spec:
+  ports:
+  - port: {{ .Values.proxy.port }}
+    targetPort: {{ .Values.proxy.port }}
+  selector:
+    app: {{ include "odoo-mcp.proxyName" . }}
+{{- end }}

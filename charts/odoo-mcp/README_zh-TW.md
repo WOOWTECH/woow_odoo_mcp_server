@@ -201,3 +201,11 @@ values 檔並讓 `check-drift.sh` 回報乾淨；如果漂移只是形式上的�
    log 的人就拿得到 token。
 6. **komibright 的 `ODOO_MCP_ALLOW_UNKNOWN_METHODS=1`** 讓副作用閘門比
    `mcp-odoo-policy` 更寬。要不要收緊是租戶的決定，不是 chart 的預設值。
+7. **`persistence.enabled: true` 時重新 roll server pod 會卡住。** `/data` 是
+   ReadWriteOnce，而 Deployment 沿用正式環境的 `RollingUpdate`：新 pod 會先被建出來，
+   舊 pod 才會消失。若排到別的節點，新 pod 就會停在
+   `Multi-Attach error for volume …`，直到舊 pod 消失為止（在 woow-k3s 的測試安裝中
+   實際遇到；正式環境 `kubectl rollout restart` 之所以沒事，是因為新 pod 剛好排在同一個
+   節點）。改成 `strategy: Recreate` 可以解決，但那會動到正式的 Deployment spec，所以不放
+   進這版 chart。在那之前，這種租戶請用 `kubectl scale deploy/mcp-odoo --replicas=0`
+   再調回 1 的方式重啟。

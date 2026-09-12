@@ -214,3 +214,12 @@ These would change a running pod template, so they stay opt-in and off:
 6. **`ODOO_MCP_ALLOW_UNKNOWN_METHODS=1`** in komibright widens the side-effect
    gate past `mcp-odoo-policy`. Narrowing it is a tenant decision, not a chart
    default.
+7. **Rolling the server pod with `persistence.enabled: true` can deadlock.** The
+   `/data` claim is ReadWriteOnce and the Deployment keeps the live
+   `RollingUpdate` strategy, so the replacement pod is created before the old one
+   goes away: if the scheduler puts it on another node it waits in
+   `Multi-Attach error for volume …` until the old pod is gone (seen in a test
+   install on woow-k3s; a live `kubectl rollout restart` only works while the new
+   pod lands on the same node). `strategy: Recreate` fixes it but changes the live
+   Deployment spec, so it is not in this chart. Until then, roll such a tenant with
+   `kubectl scale deploy/mcp-odoo --replicas=0` and back to 1.

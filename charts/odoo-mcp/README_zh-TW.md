@@ -223,6 +223,19 @@ helm upgrade --install mcp-odoo charts/odoo-mcp -n <tenant> \
 
 接著確認沒有 pod 重啟（`kubectl get pods -o wide`，比對前後的 UID 和 restart 次數）。
 
+### 接管時順手輪替租戶憑證
+
+chart 從來不會 render Odoo 密碼（Secret `mcp-odoo-secrets`）、MCP proxy token
+（包在 `mcp-odoo-proxy-config` 的 nginx 設定裡）或後台憑證（`mcp-admin-config`）：
+這些都是在這個 chart 出現之前手動建立的，`helm upgrade --take-ownership` 和
+`helm uninstall` 都不會去讀、也不會覆寫。所以接管正是最適合的時機，把每一個都對照
+目前的強度規範檢查一次，不合格的就輪替掉 —— chart 沒辦法幫你做，也不會提醒你某個值
+太弱。
+
+輪替完全是租戶擁有者的事，不屬於這個 chart：把新值寫進 Secret 或 ConfigMap，再重啟
+pod（ReadWriteOnce 的重啟陷阱見下面的後續工作第 7 點）。`deploy/woow-k3s/` 底下不會有
+任何檔案要改，因為那裡本來就沒有任何憑證。
+
 ### Instance values
 
 `deploy/woow-k3s/<tenant>.yaml` 是單一租戶的 values，不含祕密。目前只有

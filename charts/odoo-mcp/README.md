@@ -237,6 +237,21 @@ helm upgrade --install mcp-odoo charts/odoo-mcp -n <tenant> \
 Then confirm no pod restarted (`kubectl get pods -o wide`, compare UIDs and
 restart counts before and after).
 
+### Rotate the tenant credentials at takeover
+
+The chart never renders the Odoo password (Secret `mcp-odoo-secrets`), the MCP
+proxy token (part of the nginx config in `mcp-odoo-proxy-config`) or the console
+credentials (`mcp-admin-config`): they were created by hand, before this chart
+existed, and neither `helm upgrade --take-ownership` nor `helm uninstall` reads
+or replaces them. Adoption is therefore the natural moment to check each one
+against the strength policy in force today and rotate whatever falls short - the
+chart cannot do it for you, and nothing in it will tell you the value is weak.
+
+Rotation is a tenant-owner action, entirely outside this chart: write the new
+value into the Secret or ConfigMap and restart the pods (follow-up 7 below for
+the ReadWriteOnce rollout caveat). No file in `deploy/woow-k3s/` changes, because
+no credential is in there in the first place.
+
 ### Instance values
 
 `deploy/woow-k3s/<tenant>.yaml` holds one tenant's values, with no secrets.

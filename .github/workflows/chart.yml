@@ -45,7 +45,7 @@ jobs:
             --set networkPolicy.enabled=true \
             --set proxy.config.create=true,proxy.config.authToken=dummytoken \
             --set extraLabels.app\\.kubernetes\\.io/part-of=woow-odoo-mcp \
-            --set nodeSelector.'kubernetes\\.io/hostname'=node-a \
+            --set nodeSelector.kubernetes\\.io/hostname=node-a \
                                                                    > /tmp/full.yaml
           # 5. server only: no proxy, no policy, no patches, no tests
           helm template mcp-odoo "$CHART" -n demo --set "$M" \

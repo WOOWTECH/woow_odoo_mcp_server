@@ -1,0 +1,75 @@
+# Instance values for the komibright tenant on woow-k3s - the standard shape
+# that every "mcp-odoo + mcp-odoo-proxy" tenant uses.
+#
+#   helm --kube-context woow-k3s template mcp-odoo charts/odoo-mcp \
+#     -n komibright -f charts/odoo-mcp/deploy/woow-k3s/komibright.yaml
+#
+# renders exactly the objects kubectl apply created there (scripts/check-drift.sh
+# proves it). NO SECRETS HERE:
+#   - the Odoo password stays in Secret mcp-odoo-secrets
+#   - the MCP proxy token stays in ConfigMap mcp-odoo-proxy-config, which the
+#     chart mounts and does not render (proxy.config.create=false)
+#   - /data/config.json stays in ConfigMap mcp-admin-config, which the chart
+#     mounts and does not render either
+
+namespace:
+  # The namespace belongs to the Odoo tenant, not to this release.
+  create: false
+  name: komibright
+
+storageClassName: longhorn
+
+odoo:
+  url: https://komibright-odoo.woowtech.io
+  db: komibright
+  username: admin
+  timeout: "30"
+  verifySsl: "1"
+
+secrets:
+  create: false
+  existingSecret: mcp-odoo-secrets
+  passwordKey: odoo-password
+
+server:
+  allowedHosts:
+    - komibright-mcp-odoo.woowtech.io
+    - localhost
+    - mcp-odoo-proxy.komibright.svc.cluster.local
+    - mcp-odoo.komibright.svc.cluster.local
+    - 127.0.0.1
+  # Part of the live pod template: the stamp `kubectl rollout restart` left
+  # behind. Carried here so a takeover renders the identical pod template and
+  # rolls nothing. Update it only together with a deliberate restart.
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-07-08T17:06:07+08:00"
+
+persistence:
+  enabled: true
+  name: mcp-admin-data
+  size: 1Gi
+
+initConfig:
+  enabled: true
+  existingConfigMap: mcp-admin-config
+  # Live behaviour: the copy is unconditional, so every restart reverts
+  # /data/config.json to the ConfigMap. Flipping this to true is a behaviour
+  # change and is listed under README "Follow-ups".
+  keepExisting: false
+
+proxy:
+  enabled: true
+  config:
+    create: false
+    existingConfigMap: mcp-odoo-proxy-config
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-06-24T14:20:25+08:00"
+
+# No console in this tenant.
+admin:
+  enabled: false
+
+# komibright already has a namespace-wide `default-deny-external` policy that was
+# created with the tenant; this release must not own a second one.
+networkPolicy:
+  enabled: false

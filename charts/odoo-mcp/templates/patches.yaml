@@ -1,0 +1,22 @@
+{{- /*
+The three WOOWTECH patches, mounted read-only at /app/patches and run by the
+server container before odoo_mcp starts. files/patches/*.py are byte-identical
+copies of the repo's patches/*.py - CI fails if they drift (Helm cannot read
+files above the chart directory).
+*/ -}}
+{{- if and .Values.server.enabled .Values.server.applyPatches }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "odoo-mcp.patchConfigMap" . }}
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with (include "odoo-mcp.labels" .) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+data:
+{{- range $path, $_ := .Files.Glob "files/patches/*.py" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

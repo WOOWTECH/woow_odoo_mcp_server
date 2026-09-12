@@ -1,0 +1,24 @@
+# -----------------------------------------------------------------------------
+# The MCP proxy token - PLACEHOLDER ONLY. Never commit the real one.
+#
+# proxy.config.create is false by default, because the rendered nginx.conf
+# contains the token in the /private_<token>/ location. For a tenant that is
+# already running, the real ConfigMap is already in the cluster and the chart
+# only mounts it (proxy.config.existingConfigMap).
+#
+# When you do need the chart to render it - a fresh tenant, or a test install -
+# pass the token at install time from somewhere outside the repo:
+#
+#   helm install mcp-odoo charts/odoo-mcp -n <tenant> \
+#     -f charts/odoo-mcp/deploy/woow-k3s/<tenant>.yaml \
+#     --set proxy.config.create=true \
+#     --set proxy.config.authToken="$MCP_AUTH_TOKEN"
+#
+# Rotating the token: change it in the console (Tokens page) or apply a new
+# ConfigMap, then `kubectl rollout restart deploy/mcp-odoo-proxy`. Every client
+# URL changes with it.
+# -----------------------------------------------------------------------------
+proxy:
+  config:
+    create: true
+    authToken: "REPLACE_ME_MCP_AUTH_TOKEN"

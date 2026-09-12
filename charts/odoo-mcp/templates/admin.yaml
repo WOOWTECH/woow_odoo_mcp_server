@@ -1,0 +1,174 @@
+{{- /*
+FastAPI admin console + MCP token proxy from this repo (odoo_mcp_admin, :8080).
+
+Differences from the hand-written live consoles, all deliberate and all opt-in
+(admin.enabled is false by default, and no tenant currently runs a console from
+this chart):
+  - /data/config.json is SEEDED, not overwritten: admin_password and
+    mcp_auth_token use setdefault, so the console keeps whatever it rotated to.
+    The live init container does `cp` unconditionally, which reverts both on
+    every restart (see README "Follow-ups").
+  - the seeds come from a Secret, never from a ConfigMap in git.
+  - JWT_SECRET comes from the same Secret, so logins survive a restart.
+  - no ServiceAccount is mounted: the console code never calls the Kubernetes
+    API (mcp_admin_core/k8s/client.py is imported by nothing), while the Role in
+    the old k8s-deploy.yaml could read every Secret in the namespace.
+*/ -}}
+{{- if .Values.admin.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "odoo-mcp.adminName" . }}
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with (include "odoo-mcp.labels" .) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.admin.replicas }}
+  selector:
+    matchLabels:
+      app: {{ include "odoo-mcp.adminName" . }}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      {{- with .Values.admin.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        app: {{ include "odoo-mcp.adminName" . }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - env:
+        - name: MCP_ADMIN_CONFIG
+          value: /data/config.json
+        - name: JWT_EXPIRY_HOURS
+          value: {{ .Values.admin.jwtExpiryHours | quote }}
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        {{- with .Values.admin.corsOrigins }}
+        - name: CORS_ORIGINS
+          value: {{ join "," . | quote }}
+        {{- end }}
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: JWT_SECRET
+              name: {{ .Values.secrets.admin.existingSecret }}
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ .Values.admin.port }}
+          initialDelaySeconds: 20
+          periodSeconds: 30
+        name: mcp-admin
+        ports:
+        - containerPort: {{ .Values.admin.port }}
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ .Values.admin.port }}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          {{- toYaml .Values.admin.resources | nindent 10 }}
+        volumeMounts:
+        - mountPath: /data
+          name: data
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- if .Values.admin.seedConfig }}
+      initContainers:
+      - command:
+        - python
+        - -c
+        - |
+          import json, os, pathlib
+          p = pathlib.Path("/data/config.json")
+          cfg = json.loads(p.read_text()) if p.exists() else {}
+          # setdefault, NOT assignment: the Settings page changes
+          # admin_password and the Tokens page rotates mcp_auth_token. The
+          # Secret seeds the FIRST boot; after that /data is the truth.
+          cfg.setdefault("admin_password", os.environ["ADMIN_PASSWORD"])
+          cfg.setdefault("mcp_auth_token", os.environ["MCP_AUTH_TOKEN"])
+          # The Odoo connection is infrastructure, not user state: the Secret and
+          # the chart values are its source of truth on every restart.
+          cfg["connection"] = {
+              "odoo_url": os.environ["ODOO_URL"],
+              "odoo_db": os.environ["ODOO_DB"],
+              "odoo_username": os.environ["ODOO_USERNAME"],
+              "odoo_password": os.environ["ODOO_PASSWORD"],
+          }
+          # Preserve the child env across restarts: the Tools page writes its
+          # gating switches in here.
+          prev_env = (cfg.get("mcp_server") or {}).get("env") or {}
+          cfg.setdefault("mcp_server", {})
+          cfg["mcp_server"]["env"] = prev_env
+          cfg.setdefault("tools", {"disabled": [], "disabled_operations": {}})
+          cfg.setdefault("proxy", {"timeout": {{ .Values.proxy.readTimeout | trimSuffix "s" }}})
+          p.parent.mkdir(parents=True, exist_ok=True)
+          p.write_text(json.dumps(cfg, indent=2))
+          os.chmod(p, 0o600)
+          print("seeded", p)
+        env:
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: ADMIN_PASSWORD
+              name: {{ .Values.secrets.admin.existingSecret }}
+        - name: MCP_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: MCP_AUTH_TOKEN
+              name: {{ .Values.secrets.admin.existingSecret }}
+        - name: ODOO_URL
+          value: {{ required "odoo.url is required" .Values.odoo.url | quote }}
+        - name: ODOO_DB
+          value: {{ required "odoo.db is required" .Values.odoo.db | quote }}
+        - name: ODOO_USERNAME
+          value: {{ .Values.odoo.username | quote }}
+        - name: ODOO_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: {{ .Values.secrets.passwordKey }}
+              name: {{ .Values.secrets.existingSecret }}
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        name: seed-config
+        resources: {}
+        volumeMounts:
+        - mountPath: /data
+          name: data
+      {{- end }}
+      volumes:
+      - name: data
+        {{- if and .Values.persistence.enabled .Values.admin.dataFromPersistence }}
+        persistentVolumeClaim:
+          claimName: {{ include "odoo-mcp.dataClaim" . }}
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "odoo-mcp.adminName" . }}
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with (include "odoo-mcp.labels" .) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+spec:
+  ports:
+  - name: http
+    port: {{ .Values.admin.port }}
+    targetPort: {{ .Values.admin.port }}
+  selector:
+    app: {{ include "odoo-mcp.adminName" . }}
+{{- end }}

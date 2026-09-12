@@ -217,7 +217,10 @@ docker run -d --name mcp-admin \
   ghcr.io/woowtech/woow-odoo-mcp-server:latest
 ```
 
-Open `http://localhost:8080` and log in with the default password: `admin`.
+Open `http://localhost:8080` and log in with the password you passed as
+`ADMIN_PASSWORD`. There is no built-in default: if `ADMIN_PASSWORD` is unset on
+first boot the console seeds a random password that nobody can read, and you have
+to re-create `/data/config.json` to get in.
 
 ### Docker Compose (Full Stack)
 
@@ -242,7 +245,7 @@ After Odoo finishes initializing, open `http://localhost:8080` and configure the
 - **Odoo URL**: `http://odoo:8069`
 - **Database**: `odoo`
 - **Username**: `admin`
-- **Password**: `admin`
+- **Password**: the `POSTGRES_PASSWORD` you set in `.env`
 
 ---
 
@@ -290,28 +293,53 @@ docker compose up -d
 docker compose up -d mcp-admin
 ```
 
-### Option 4: Kubernetes (K3s)
+### Option 4: Kubernetes (K3s) — Helm chart
 
-Deploy to a Kubernetes cluster with RBAC, health checks, and resource limits:
+[`charts/odoo-mcp`](charts/odoo-mcp/README.md) deploys one Odoo tenant's MCP
+server: the patched `odoo-mcp` streamable-HTTP server, the nginx token gate in
+front of it, the side-effect policy file, and optionally this admin console.
 
 ```bash
-# Apply the manifests (adjust namespace as needed)
-kubectl apply -f k8s-deploy.yaml
+# A new tenant. Nothing secret is stored in the repo.
+ODOO_PASSWORD=...
+MCP_AUTH_TOKEN=$(python3 -c 'import secrets;print(secrets.token_hex(10))')
 
-# Check deployment status
-kubectl get pods -n kasim-odoo -l app=odoo-mcp-admin
+helm install mcp-odoo charts/odoo-mcp -n <tenant> --create-namespace \
+  --set odoo.url=https://<tenant>-odoo.woowtech.io \
+  --set odoo.db=<tenant> \
+  --set "server.allowedHosts={<tenant>-mcp-odoo.woowtech.io,localhost,mcp-odoo-proxy.<tenant>.svc.cluster.local,mcp-odoo.<tenant>.svc.cluster.local,127.0.0.1}" \
+  --set secrets.create=true --set secrets.odooPassword="$ODOO_PASSWORD" \
+  --set proxy.config.create=true --set proxy.config.authToken="$MCP_AUTH_TOKEN" \
+  --set admin.enabled=true \
+  --set secrets.admin.adminPassword="$ADMIN_PASSWORD" \
+  --set secrets.admin.mcpAuthToken="$MCP_AUTH_TOKEN" \
+  --set secrets.admin.jwtSecret="$JWT_SECRET"
 
-# Port-forward for local access
-kubectl port-forward -n kasim-odoo svc/odoo-mcp-admin-svc 8080:9001
+# A tenant that already exists (values without secrets live in the repo)
+helm install mcp-odoo charts/odoo-mcp -n komibright \
+  -f charts/odoo-mcp/deploy/woow-k3s/komibright.yaml
+
+helm test mcp-odoo -n <tenant> --logs
 ```
 
-The K8s deployment includes:
+The chart includes:
 
-- **ServiceAccount** with namespace-scoped RBAC (Secrets, ConfigMaps, Pods, Deployments)
-- **Readiness probe** on `/healthz` (5s initial delay, 10s interval)
-- **Liveness probe** on `/healthz` (15s initial delay, 30s interval)
+- **Readiness/liveness probes** on `/healthz` for the console
 - **Resource limits**: 100m-500m CPU, 128Mi-512Mi memory
-- **Control-plane nodeSelector** for predictable scheduling
+- **`helm uninstall` never deletes data**: the Namespace, the PVC and any
+  chart-created Secret carry `helm.sh/resource-policy: keep`
+- **No credential in git**: `secrets.create=false` by default, and the MCP proxy
+  token stays in the cluster ConfigMap
+- **A read-only `helm test` smoke pod**
+- **No ServiceAccount**: the console never calls the Kubernetes API, so unlike
+  the old `k8s-deploy.yaml` nothing grants it read access to every Secret in the
+  namespace
+
+> The old root-level `k8s-deploy.yaml` has been removed. It was a copy of a
+> manifest applied by hand to one namespace, pointed at an image this repo does
+> not build, exposed ports `9001`/`9002` while the image listens on `8080`, and
+> also redefined an unrelated product (`n8n-mcp-admin`) so applying it clobbered
+> that Deployment too.
 
 ### Option 5: Development Mode
 
@@ -336,7 +364,7 @@ npm run dev
 
 After starting the container:
 
-1. **Login** — Navigate to `http://localhost:8080` and enter the admin password (default: `admin`)
+1. **Login** — Navigate to `http://localhost:8080` and enter the admin password (the `ADMIN_PASSWORD` seed; there is no default)
 2. **Connection** — Go to the Connection page, enter your Odoo URL, database, username, and password, then click **Test Connection**
 3. **Tools** — Browse all 39 MCP tools, toggle individual tools on/off as needed
 4. **Tokens** — Generate an MCP auth token by clicking **Rotate Token** -- save it for your MCP client configuration
@@ -349,13 +377,13 @@ The configuration file is automatically created on first run at `/data/config.js
 
 ```json
 {
-  "admin_password": "admin",
-  "mcp_auth_token": "a1b2c3d4e5f6...",
+  "admin_password": "<seeded from ADMIN_PASSWORD on first boot>",
+  "mcp_auth_token": "<20 hex chars, generated on first boot>",
   "connection": {
     "odoo_url": "http://odoo:8069",
     "odoo_db": "mydb",
     "odoo_username": "admin",
-    "odoo_password": "secret"
+    "odoo_password": "<REPLACE_ME>"
   },
   "mcp_server": {
     "command": "odoo-mcp-server",
@@ -419,7 +447,7 @@ claude mcp add odoo --transport sse \
   <img src="docs/screenshots/login.png" alt="Login Page" width="720"/>
 </p>
 
-JWT-based authentication. Default password is `admin`. Supports cookie-based and Authorization header auth.
+JWT-based authentication. The password is seeded from `ADMIN_PASSWORD` on first boot — there is no default password. Supports cookie-based and Authorization header auth.
 
 ### Dashboard
 
@@ -563,7 +591,7 @@ All API endpoints require JWT authentication (except login and health check).
 
 ### Best Practices
 
-1. **Change the default admin password** immediately after first login
+1. **Set `ADMIN_PASSWORD` and `JWT_SECRET`** before the first boot; without `JWT_SECRET` every restart invalidates all sessions
 2. **Set `JWT_SECRET`** environment variable for token persistence across restarts
 3. **Restrict CORS origins** in production deployments
 4. **Use Kubernetes NetworkPolicy** to limit pod-to-pod communication
@@ -686,7 +714,11 @@ woow_odoo_mcp_server/
 │       └── settings.png
 ├── Dockerfile                   # Multi-stage build (Node + Python)
 ├── docker-compose.yml           # Full stack: PostgreSQL + Odoo + Admin
-├── k8s-deploy.yaml              # Kubernetes deployment manifests
+├── charts/
+│   └── odoo-mcp/                # Helm chart: one Odoo tenant's MCP server
+├── scripts/
+│   └── check-drift.sh           # chart vs. live objects, field by field
+├── .env.example                 # local stack credentials (values empty)
 ├── pyproject.toml               # Python package configuration
 ├── LICENSE                      # MIT License
 ├── CONTRIBUTING.md              # Contribution guide
@@ -780,14 +812,23 @@ Deploy separate instances with different Odoo accounts for different permission 
 - name: ODOO_USERNAME
   value: "sales_mcp_user"
 - name: ODOO_PASSWORD
-  value: "sales_password"
+  valueFrom:
+    secretKeyRef:
+      name: mcp-odoo-secrets      # REPLACE_ME: your Secret
+      key: odoo-password
 
 # Instance for admin team (full access)
 - name: ODOO_USERNAME
   value: "admin"
 - name: ODOO_PASSWORD
-  value: "admin_password"
+  valueFrom:
+    secretKeyRef:
+      name: mcp-odoo-admin-secrets # REPLACE_ME: your Secret
+      key: odoo-password
 ```
+
+Never put an Odoo password in a manifest literal: keep it in a Secret and
+reference it, which is what `charts/odoo-mcp` does (`secrets.existingSecret`).
 
 Each instance gets its own MCP proxy token, so you can distribute different tokens to different teams.
 

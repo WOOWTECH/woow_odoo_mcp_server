@@ -156,23 +156,39 @@ sequenceDiagram
 
 ### Kubernetes (K3s)
 
+Deployed by [`charts/odoo-mcp`](../charts/odoo-mcp/README.md), one release per
+Odoo tenant. The console listens on 8080 - the same port the Dockerfile exposes -
+and there is no ServiceAccount: nothing in the application calls the Kubernetes
+API, so nothing needs read access to the namespace's Secrets.
+
 ```
-┌─────────────────────────────────────────────────┐
-│  Namespace: tenant-odoo                          │
-│                                                  │
-│  ┌──────────────────┐  ┌──────────────────────┐  │
-│  │ odoo-mcp-admin   │  │ mcp-odoo             │  │
-│  │ Deployment       │  │ Deployment            │  │
-│  │ (port 9001)      │  │ (odoo-mcp-server)     │  │
-│  └────────┬─────────┘  └────────┬──────────────┘  │
-│           │                      │                 │
-│  ┌────────▼──────────────────────▼──────────────┐  │
-│  │ ServiceAccount + RBAC (Secrets, ConfigMaps)  │  │
-│  └──────────────────────────────────────────────┘  │
-│                                                  │
-│  ┌──────────────┐  ┌────────────────────────┐    │
-│  │ Odoo + Nginx │  │ cloudflared (Tunnel)   │    │
-│  │ (port 8069)  │  │ → *.woowtech.io        │    │
-│  └──────────────┘  └────────────────────────┘    │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Namespace: tenant-odoo        (helm release "mcp-odoo")  │
+│                                                           │
+│  ┌────────────────────┐      ┌─────────────────────────┐  │
+│  │ mcp-odoo-proxy     │─────▶│ mcp-odoo                │  │
+│  │ nginx, :8001       │ only │ Deployment              │  │
+│  │ /private_<token>/  │ this │ python3 -m odoo_mcp     │  │
+│  │ everything else    │ path │ streamable HTTP :8000   │  │
+│  │ → 403              │      │ /app/patches applied    │  │
+│  └────────────────────┘      └───────────┬─────────────┘  │
+│                                          │                 │
+│                    ┌─────────────────────▼──────────────┐  │
+│                    │ ConfigMap mcp-odoo-policy          │  │
+│                    │ side-effect allow-list             │  │
+│                    │ Secret mcp-odoo-secrets            │  │
+│                    │ odoo-password                      │  │
+│                    └────────────────────────────────────┘  │
+│                                                           │
+│  ┌────────────────────┐  (optional, admin.enabled=true)    │
+│  │ mcp-odoo-admin     │  console + token proxy, :8080      │
+│  │ /data/config.json  │  seeded from a Secret, not a CM    │
+│  └────────────────────┘                                    │
+│                                                           │
+│  Not owned by this chart - part of the Odoo tenant:        │
+│  ┌──────────────┐  ┌────────────────────────┐             │
+│  │ Odoo + Nginx │  │ cloudflared (Tunnel)   │             │
+│  │ (port 8069)  │  │ → *.woowtech.io        │             │
+│  └──────────────┘  └────────────────────────┘             │
+└──────────────────────────────────────────────────────────┘
 ```

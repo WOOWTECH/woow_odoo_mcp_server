@@ -1,0 +1,31 @@
+{{- /*
+Off by default. The live tenants already carry a namespace-wide
+`default-deny-external` policy that was created with the tenant (podSelector {},
+ingress from the same namespace only); enabling this would make the release own
+a second, overlapping policy with the same effect.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "odoo-mcp.name" . }}-deny-external
+  namespace: {{ include "odoo-mcp.ns" . }}
+  {{- with (include "odoo-mcp.labels" .) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - {{ include "odoo-mcp.name" . }}
+      - {{ include "odoo-mcp.proxyName" . }}
+      - {{ include "odoo-mcp.adminName" . }}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector: {}
+{{- end }}

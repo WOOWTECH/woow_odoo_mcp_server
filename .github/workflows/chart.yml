@@ -1,0 +1,219 @@
+name: chart
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: {}
+
+env:
+  CHART: charts/odoo-mcp
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.5
+
+      - name: helm lint
+        run: |
+          helm lint "$CHART" -f "$CHART/deploy/woow-k3s/komibright.yaml"
+          helm lint "$CHART" --set odoo.url=https://x,odoo.db=x,server.allowedHosts={x}
+
+      - name: helm template (every values combination)
+        run: |
+          M="odoo.url=https://odoo.example,odoo.db=demo,server.allowedHosts={mcp.example,localhost}"
+          S="secrets.create=true,secrets.odooPassword=x,secrets.admin.adminPassword=x,secrets.admin.mcpAuthToken=x,secrets.admin.jwtSecret=x"
+          # 1. the live komibright instance
+          helm template mcp-odoo "$CHART" -n komibright \
+            -f "$CHART/deploy/woow-k3s/komibright.yaml"            > /tmp/instance.yaml
+          # 2. the same instance with the nginx ConfigMap rendered here
+          helm template mcp-odoo "$CHART" -n komibright \
+            -f "$CHART/deploy/woow-k3s/komibright.yaml" \
+            --set proxy.config.create=true,proxy.config.authToken=dummytoken \
+                                                                   > /tmp/instance-proxycm.yaml
+          # 3. defaults + only the required values
+          helm template mcp-odoo "$CHART" -n demo --set "$M"       > /tmp/minimum.yaml
+          # 4. everything on: Namespace, Secrets, console, PVC, NetworkPolicy
+          helm template mcp-odoo "$CHART" -n demo --set "$M,$S" \
+            --set namespace.create=true,namespace.name=demo-mcp \
+            --set admin.enabled=true,persistence.enabled=true \
+            --set networkPolicy.enabled=true \
+            --set proxy.config.create=true,proxy.config.authToken=dummytoken \
+            --set extraLabels.app\\.kubernetes\\.io/part-of=woow-odoo-mcp \
+                                                                   > /tmp/full.yaml
+          # 5. server only: no proxy, no policy, no patches, no tests
+          helm template mcp-odoo "$CHART" -n demo --set "$M" \
+            --set proxy.enabled=false,policy.enabled=false \
+            --set server.applyPatches=false,tests.enabled=false    > /tmp/server-only.yaml
+          for f in /tmp/instance.yaml /tmp/instance-proxycm.yaml /tmp/minimum.yaml /tmp/full.yaml /tmp/server-only.yaml; do
+            echo "--- $f"; grep -c '^kind:' "$f"
+          done
+
+      - name: kubeconform (schema validation)
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -strict -summary \
+            /tmp/instance.yaml /tmp/instance-proxycm.yaml /tmp/minimum.yaml \
+            /tmp/full.yaml /tmp/server-only.yaml
+
+      - name: Required values are enforced
+        run: |
+          fail() { echo "FAIL: $1"; exit 1; }
+          # Plain defaults must NOT render: odoo.url / odoo.db / allowedHosts are required.
+          helm template mcp-odoo "$CHART" -n demo > /dev/null 2>&1 \
+            && fail "chart rendered with no odoo.url/odoo.db/allowedHosts"
+          helm template mcp-odoo "$CHART" -n demo \
+            --set odoo.url=https://x,odoo.db=x > /dev/null 2>&1 \
+            && fail "chart rendered with an empty server.allowedHosts"
+          helm template mcp-odoo "$CHART" -n demo \
+            --set odoo.url=https://x,odoo.db=x,server.allowedHosts={x} \
+            --set secrets.create=true > /dev/null 2>&1 \
+            && fail "secrets.create=true rendered without secrets.odooPassword"
+          helm template mcp-odoo "$CHART" -n demo \
+            --set odoo.url=https://x,odoo.db=x,server.allowedHosts={x} \
+            --set proxy.config.create=true > /dev/null 2>&1 \
+            && fail "proxy.config.create=true rendered without an auth token"
+          helm template mcp-odoo "$CHART" -n demo \
+            --set odoo.url=https://x,odoo.db=x,server.allowedHosts={x} \
+            --set persistence.enabled=true,initConfig.enabled=true,initConfig.existingConfigMap= \
+            > /dev/null 2>&1 \
+            && fail "initConfig.enabled=true rendered without existingConfigMap"
+          # initConfig needs a data volume: without one the seed container and the
+          # /data mount are not rendered at all, so this must fail loudly.
+          helm template mcp-odoo "$CHART" -n demo \
+            --set odoo.url=https://x,odoo.db=x,server.allowedHosts={x} \
+            --set initConfig.enabled=true > /dev/null 2>&1 \
+            && fail "initConfig.enabled=true rendered with persistence.enabled=false"
+          echo "required() guards fire"
+          # Both Secrets must render with secrets.create=true: catches
+          # templates/secrets.yaml going missing from git.
+          n=$(grep -c '^kind: Secret$' /tmp/full.yaml || true)
+          [ "$n" -eq 2 ] || fail "expected 2 Secrets in the full render, got $n"
+          # Every template must contribute to at least one render.
+          for t in "$CHART"/templates/*.yaml "$CHART"/templates/tests/*.yaml; do
+            k=$(basename "$t" .yaml)
+            case "$k" in
+              server)        grep -q 'name: mcp-odoo$' /tmp/minimum.yaml || fail "$t not rendered" ;;
+              proxy)         grep -q 'name: mcp-odoo-proxy' /tmp/minimum.yaml || fail "$t not rendered" ;;
+              policy)        grep -q 'name: mcp-odoo-policy' /tmp/minimum.yaml || fail "$t not rendered" ;;
+              patches)       grep -q 'name: mcp-odoo-patch' /tmp/minimum.yaml || fail "$t not rendered" ;;
+              admin)         grep -q 'name: mcp-odoo-admin' /tmp/full.yaml || fail "$t not rendered" ;;
+              pvc)           grep -q 'kind: PersistentVolumeClaim' /tmp/full.yaml || fail "$t not rendered" ;;
+              namespace)     grep -q 'kind: Namespace' /tmp/full.yaml || fail "$t not rendered" ;;
+              secrets)       grep -q 'kind: Secret' /tmp/full.yaml || fail "$t not rendered" ;;
+              networkpolicy) grep -q 'kind: NetworkPolicy' /tmp/full.yaml || fail "$t not rendered" ;;
+              smoke)         grep -q 'mcp-odoo-smoke' /tmp/minimum.yaml || fail "$t not rendered" ;;
+              *)             fail "no render check for $t" ;;
+            esac
+          done
+          echo "every template renders in at least one combination"
+
+      - name: The documented tarball install path works
+        run: |
+          # README "Install" tells people to unpack a GitHub source archive and
+          # install from <dir>/charts/odoo-mcp, because `helm install <url>` only
+          # accepts an archive with Chart.yaml at its root. Reproduce that exact
+          # layout from this commit (no network) and install from it.
+          rm -rf /tmp/tb && mkdir -p /tmp/tb
+          git archive --format=tar --prefix=woow_odoo_mcp_server-main/ HEAD \
+            | tar -x -C /tmp/tb
+          C=/tmp/tb/woow_odoo_mcp_server-main/charts/odoo-mcp
+          [ -f "$C/Chart.yaml" ] || { echo "no Chart.yaml at $C"; exit 1; }
+          helm lint "$C" -f "$C/deploy/woow-k3s/komibright.yaml"
+          helm template mcp-odoo "$C" -n komibright \
+            -f "$C/deploy/woow-k3s/komibright.yaml" > /tmp/tarball.yaml
+          diff /tmp/instance.yaml /tmp/tarball.yaml
+          # And the READMEs must not regress to feeding the archive URL straight
+          # to helm, which errors with "Chart.yaml file is missing".
+          for f in "$CHART/README.md" "$CHART/README_zh-TW.md"; do
+            grep -q 'archive/refs/heads' "$f" \
+              || { echo "$f documents no tarball install"; exit 1; }
+            if grep -E 'helm (install|template)[^#]*archive/refs' "$f"; then
+              echo "$f pipes an archive URL straight into helm - that does not work"
+              exit 1
+            fi
+          done
+          echo "tarball install path works and is documented in both READMEs"
+
+      - name: Chart patches match the repo patches
+        run: |
+          # Helm cannot read files above the chart directory, so
+          # charts/odoo-mcp/files/patches/ is a copy. It must never drift.
+          diff -r patches "$CHART/files/patches"
+          echo "files/patches == patches"
+
+      - name: No secrets committed
+        run: |
+          pip install --quiet pyyaml
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = []
+          v = yaml.safe_load(open("charts/odoo-mcp/values.yaml"))
+          s = v["secrets"]
+          for k in ("odooPassword",):
+              if s[k]:
+                  bad.append(f"values.yaml secrets.{k} must be empty")
+          for k, val in s["admin"].items():
+              if k != "existingSecret" and val:
+                  bad.append(f"values.yaml secrets.admin.{k} must be empty")
+          if s["create"]:
+              bad.append("values.yaml secrets.create must default to false")
+          if v["proxy"]["config"]["authToken"]:
+              bad.append("values.yaml proxy.config.authToken must be empty")
+          if v["proxy"]["config"]["create"]:
+              bad.append("values.yaml proxy.config.create must default to false")
+          # The default and instance renders must contain no Secret at all.
+          for f in ("/tmp/instance.yaml", "/tmp/minimum.yaml"):
+              for d in yaml.safe_load_all(open(f)):
+                  if d and d["kind"] == "Secret":
+                      bad.append(f"{f} must not contain Secrets (secrets.create=false)")
+          # Instance values files carry no credentials.
+          for f in glob.glob("charts/odoo-mcp/deploy/**/*.yaml", recursive=True):
+              d = yaml.safe_load(open(f)) or {}
+              sec = d.get("secrets") or {}
+              px = (d.get("proxy") or {}).get("config") or {}
+              if sec.get("create") or sec.get("odooPassword") or any(
+                      (sec.get("admin") or {}).get(k) for k in
+                      ("adminPassword", "mcpAuthToken", "jwtSecret")):
+                  bad.append(f"{f} must not carry secret values")
+              if px.get("authToken"):
+                  bad.append(f"{f} must not carry proxy.config.authToken")
+          # Example files are placeholders only.
+          for f in glob.glob("charts/odoo-mcp/examples/*.example.yaml"):
+              for d in yaml.safe_load_all(open(f)):
+                  for k, val in ((d or {}).get("stringData") or {}).items():
+                      if "REPLACE_ME" not in str(val):
+                          bad.append(f"examples: {f} {k} is not a placeholder")
+          # .env.example holds no values.
+          for line in open(".env.example"):
+              if "=" in line and not line.startswith("#") and line.split("=", 1)[1].strip():
+                  bad.append(f".env.example must have empty values: {line.strip()}")
+          # The .gitignore secret patterns must stay anchored and must not hide templates.
+          ign = open(".gitignore").read().splitlines()
+          for p in ign:
+              p = p.strip()
+              if p.endswith("secrets.yaml") and not p.startswith(("/", "!", "#")):
+                  bad.append(f".gitignore pattern {p!r} is unanchored and would hide templates/secrets.yaml")
+          sys.exit("\n".join(bad)) if bad else print("no secrets committed")
+          PY
+
+      - name: Every chart template is tracked by git
+        run: |
+          # An unanchored .gitignore pattern once silently dropped
+          # templates/secrets.yaml from the repo. Prove git sees them all.
+          for f in $(find "$CHART" -type f | sort); do
+            git ls-files --error-unmatch "$f" > /dev/null 2>&1 || { echo "UNTRACKED: $f"; exit 1; }
+          done
+          echo "all $(find "$CHART" -type f | wc -l) chart files are tracked"
+
+      - name: Shell scripts parse
+        run: bash -n scripts/*.sh
+
+      - name: Python sources compile
+        run: python3 -m compileall -q mcp_admin_core odoo_mcp_admin patches

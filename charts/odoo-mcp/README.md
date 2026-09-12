@@ -130,6 +130,35 @@ audit log.
 
 ---
 
+## Testing without the private image
+
+`image.repository` (`ghcr.io/woowtech/woow-odoo-mcp-server`) is a **private**
+GHCR package. It is pulled with the default `imagePullSecrets: [{name:
+mcp-admin-ghcr}]`, and that Secret only exists in real tenant namespaces — it is
+created once by hand per tenant, outside this chart. **Do not copy a tenant's
+`mcp-admin-ghcr` (or any other production pull secret) into a test namespace**;
+phase-1 rules only allow reusing one real org credential in a test (the
+OpenRouter key, for a specific functional check elsewhere in this repo's
+migration), and a GHCR pull secret is not that key.
+
+Two ways to test a fresh install without it:
+
+* **Chart wiring, with a public stand-in image** — set
+  `imagePullSecrets=null` and point `image.repository`/`image.tag` at a public
+  image (e.g. `busybox:latest`, which is also what `busybox.image` already uses
+  for the init container). The pod won't run the real server, but it proves
+  every ConfigMap/Secret/PVC mount and the container command are wired
+  correctly: the pod reaches `python3 -m odoo_mcp …` and only fails inside
+  busybox with "no such file or directory", not on a missing mount.
+* **App behaviour, out-of-cluster** — install the same `odoo-mcp` version the
+  Dockerfile installs into a venv, apply `files/patches/*.py` unmodified, and
+  run `python3 -m odoo_mcp --transport streamable-http …` directly; separately
+  run `odoo_mcp_admin` with `uvicorn` and hit `/healthz`. This exercises the
+  actual server and admin console — the MCP handshake and the health endpoint —
+  without needing the private image or a production pull credential at all.
+
+---
+
 ## Uninstall (data is kept)
 
 ```bash

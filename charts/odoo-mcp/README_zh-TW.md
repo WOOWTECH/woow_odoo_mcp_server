@@ -126,6 +126,32 @@ helm test mcp-odoo -n <tenant> --logs
 
 ---
 
+## 不用 private image 也能測
+
+`image.repository`（`ghcr.io/woowtech/woow-odoo-mcp-server`）是一個 **private**
+的 GHCR package，預設用 `imagePullSecrets: [{name: mcp-admin-ghcr}]` 拉取，而這
+個 Secret 只存在於正式 tenant 的 namespace 裡——是每個 tenant 手動建一次的，跟這
+個 chart 無關。**不要把某個 tenant 的 `mcp-admin-ghcr`（或任何其他正式環境的
+pull secret）複製進測試 namespace**；Helm 遷移 phase 1 的規則只允許在測試裡重用
+一個真實的組織憑證（OpenRouter key，用在遷移計畫裡另一個功能測試），GHCR pull
+secret 不算在內。
+
+兩種不需要它也能測試的方法：
+
+* **Chart 接線，用公開 image 頂替** — 設 `imagePullSecrets=null`，把
+  `image.repository`/`image.tag` 指到一個公開 image（例如 `busybox:latest`，
+  `busybox.image` 本來就用它跑 init container）。這樣不會真的跑起 server，但可以
+  證明每個 ConfigMap/Secret/PVC 掛載跟 container command 都接對了：pod 會執行到
+  `python3 -m odoo_mcp …`，只會因為 busybox 裡沒有這個指令而失敗，不是因為少掛
+  了什麼。
+* **App 本身的行為，在叢集外驗證** — 在虛擬環境裡裝 Dockerfile 裝的同一個
+  `odoo-mcp` 版本，套用 `files/patches/*.py`（不修改），直接跑
+  `python3 -m odoo_mcp --transport streamable-http …`；另外用 `uvicorn` 跑
+  `odoo_mcp_admin`，打 `/healthz`。這樣就驗證了真正的 server 跟後台——MCP 的
+  handshake 跟健康檢查端點——完全不需要 private image 或正式環境的 pull 憑證。
+
+---
+
 ## 解除安裝（資料保留）
 
 ```bash

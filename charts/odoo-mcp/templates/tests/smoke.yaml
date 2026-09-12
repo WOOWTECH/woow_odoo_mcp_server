@@ -3,11 +3,12 @@
 ConfigMap it is given; it never writes to Odoo and never calls a tool that has a
 side effect.
 
-  1. the MCP server answers on :{{ .Values.server.port }} - an unauthenticated
-     GET on the MCP path must NOT be a connection error (the streamable-HTTP
-     endpoint answers 400/405/406 to a bare GET, which is proof it is serving)
+  1. the MCP server answers on :{{ .Values.server.port }} - a bare GET on the MCP
+     path must reach the application, not a closed port
   2. the proxy returns 403 for every path outside /private_<token>/
-  3. the proxy forwards /private_<token>{{ .Values.server.path }} to the server
+  3. a real MCP `initialize` handshake through /private_<token>{{ .Values.server.path }}
+     returns a JSON-RPC result with serverInfo. `initialize` has no side effect:
+     it neither reads nor writes a single Odoo record.
   4. the admin console answers GET /healthz with 200 (when admin.enabled)
 
 The token is read from the mounted ConfigMap, never passed as an argument, so it
@@ -41,37 +42,52 @@ spec:
       command: [python3, -c]
       args:
         - |
-          import os, re, sys, urllib.error, urllib.request
+          import json, os, re, sys, urllib.error, urllib.request
 
-          def status(url, method="GET"):
-              req = urllib.request.Request(url, method=method)
+          def call(url, data=None, headers=None):
+              req = urllib.request.Request(url, data=data, headers=headers or {},
+                                           method="POST" if data else "GET")
               try:
-                  with urllib.request.urlopen(req, timeout=30) as r:
-                      return r.status, r.read(2000).decode("utf-8", "replace")
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      return r.status, r.read(4000).decode("utf-8", "replace")
               except urllib.error.HTTPError as e:
-                  return e.code, e.read(2000).decode("utf-8", "replace")
+                  return e.code, e.read(4000).decode("utf-8", "replace")
 
           server = os.environ.get("SERVER_URL")
           if server:
-              code, _ = status(server)
+              code, _ = call(server)
               assert code, code
               print("mcp server %s -> HTTP %s (serving)" % (server, code))
 
           proxy = os.environ.get("PROXY_URL")
           if proxy:
-              code, body = status(proxy + "/")
+              code, body = call(proxy + "/")
               assert code == 403, "proxy root should be 403, got %s %s" % (code, body)
               print("proxy root -> 403 (token required)")
               conf = open("/nginx/nginx.conf").read()
               m = re.search(r"location /private_([^/]+)/", conf)
               assert m, "no /private_<token>/ location in the proxy config"
-              code, _ = status("%s/private_%s%s" % (proxy, m.group(1), os.environ["MCP_PATH"]))
-              assert code != 403, "proxy did not forward the tokenised path"
-              print("proxy /private_***%s -> HTTP %s (forwarded)" % (os.environ["MCP_PATH"], code))
+              url = "%s/private_%s%s" % (proxy, m.group(1), os.environ["MCP_PATH"])
+              # A real MCP handshake. initialize touches no Odoo record.
+              payload = json.dumps({
+                  "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                             "clientInfo": {"name": "helm-test-smoke", "version": "1"}},
+              }).encode()
+              code, body = call(url, payload, {
+                  "Content-Type": "application/json",
+                  "Accept": "application/json, text/event-stream"})
+              assert code == 200, "MCP initialize through the proxy: %s %s" % (code, body)
+              # streamable HTTP answers as SSE: one "data: {json}" line.
+              line = next(l for l in body.splitlines() if l.startswith("data: "))
+              result = json.loads(line[len("data: "):])["result"]
+              print("mcp initialize -> %s %s (protocol %s)" % (
+                  result["serverInfo"]["name"], result["serverInfo"]["version"],
+                  result["protocolVersion"]))
 
           admin = os.environ.get("ADMIN_URL")
           if admin:
-              code, body = status(admin + "/healthz")
+              code, body = call(admin + "/healthz")
               assert code == 200, "admin /healthz %s %s" % (code, body)
               print("admin /healthz -> 200", body.strip()[:120])
 

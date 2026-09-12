@@ -82,7 +82,7 @@ which is what the tenant's Cloudflare tunnel points at.
 | `odoo.url`, `odoo.db` | — | **required**, no default |
 | `server.allowedHosts` | `[]` | **required**; an empty list makes every request fail the DNS-rebinding check |
 | `baseName` | `mcp-odoo` | prefix for every object |
-| `namespace.create` / `.name` | `false` / release ns | a namespace equal to the release namespace is never rendered |
+| `namespace.create` / `.name` | `false` / release ns | names **only** the Namespace object; it never moves the release's own objects, which always follow `-n`. A namespace equal to the release namespace is never rendered |
 | `keepOnUninstall` | `true` | `helm.sh/resource-policy: keep` on Namespace, PVC and chart-created Secrets |
 | `storageClassName` | `longhorn` | `longhorn-delete` for throwaway tests, `local-path` on the laptop cluster |
 | `secrets.create` | `false` | `true` renders the Secrets from `required()`-guarded values |

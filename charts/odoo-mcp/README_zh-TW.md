@@ -81,7 +81,7 @@ MCP 端點會是
 | `odoo.url`、`odoo.db` | — | **必填**，沒有預設值 |
 | `server.allowedHosts` | `[]` | **必填**；空清單會讓每個請求都卡在 DNS rebinding 檢查 |
 | `baseName` | `mcp-odoo` | 所有物件的名稱前綴 |
-| `namespace.create` / `.name` | `false` / release ns | 等於 release namespace 的 namespace 永遠不會被 render |
+| `namespace.create` / `.name` | `false` / release ns | 只決定 Namespace 物件本身的名稱；不會搬動這個 release 的其他物件（永遠跟著 `-n`）。等於 release namespace 的 namespace 永遠不會被 render |
 | `keepOnUninstall` | `true` | 在 Namespace、PVC、chart 產生的 Secret 加上 `helm.sh/resource-policy: keep` |
 | `storageClassName` | `longhorn` | 測試用 `longhorn-delete`，本機叢集用 `local-path` |
 | `secrets.create` | `false` | `true` 時才從 `required()` 保護的 values 產生 Secret |

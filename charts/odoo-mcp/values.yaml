@@ -15,7 +15,11 @@ namespace:
   # is never rendered - create it with --create-namespace instead - so
   # `helm uninstall` can never delete the namespace the release lives in.
   create: false
-  # "" = .Release.Namespace
+  # Name of that Namespace OBJECT only ("" = .Release.Namespace, i.e. nothing is
+  # rendered). It can NEVER move this release's own objects: every Deployment,
+  # Service, ConfigMap, Secret and PVC always follows -n / --namespace. A key
+  # that could silently retarget them would let a rehearsal write to a live
+  # tenant namespace, so this one deliberately cannot.
   name: ""
 
 # Add `helm.sh/resource-policy: keep` to Namespaces, PVCs and chart-created

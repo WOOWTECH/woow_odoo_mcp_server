@@ -6,7 +6,22 @@ Cloudflare tunnel and the nginx proxy route to these exact Service names, and
 changing a selector or a pod-template label would restart every pod.
 */}}
 
+{{/*
+The namespace EVERY object of this release lives in: always the release
+namespace, i.e. exactly what `-n` / `--namespace` says. `namespace.name` is
+deliberately NOT consulted here: a values file or a stray `--set` must never be
+able to retarget the rendered objects at another (production) namespace while
+the release record stays in the one `-n` names.
+*/}}
 {{- define "odoo-mcp.ns" -}}
+{{ .Release.Namespace }}
+{{- end -}}
+
+{{/*
+Name of the Namespace OBJECT this chart may create (namespace.yaml only). It
+can never move this release's own objects - see "odoo-mcp.ns".
+*/}}
+{{- define "odoo-mcp.namespaceName" -}}
 {{ default .Release.Namespace .Values.namespace.name }}
 {{- end -}}
 

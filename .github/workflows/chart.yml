@@ -150,7 +150,7 @@ jobs:
           done
           echo "tarball install path works and is documented in both READMEs"
 
-      - name: Instance values cannot override -n
+      - name: Nothing can override -n
         run: |
           # A top-level `namespace:` in an instance values file silently wins
           # over `-n`, so a rehearsal aimed at a test namespace would write to
@@ -164,6 +164,29 @@ jobs:
               || { echo "$f does not follow -n: $got"; exit 1; }
           done
           echo "every deploy/woow-k3s values file follows -n"
+          # The chart itself must make that impossible, not just these files:
+          # namespace.name names ONLY the Namespace object, so even an ad-hoc
+          # values file or --set outside deploy/ cannot retarget an object.
+          out=$(helm template t "$CHART" -n SENTINEL \
+                  --set odoo.url=https://x,odoo.db=x,server.allowedHosts={x} \
+                  --set namespace.create=true,namespace.name=other \
+                  --set admin.enabled=true,persistence.enabled=true \
+                  --set networkPolicy.enabled=true \
+                  --set secrets.create=true,secrets.odooPassword=x \
+                  --set secrets.admin.adminPassword=x,secrets.admin.mcpAuthToken=x \
+                  --set secrets.admin.jwtSecret=x)
+          got=$(printf '%s\n' "$out" | grep '^  namespace:' | sort -u)
+          [ "$got" = "  namespace: SENTINEL" ] \
+            || { echo "--set namespace.name moved objects away from -n: $got"; exit 1; }
+          printf '%s\n' "$out" | grep -q '^  name: other$' \
+            || { echo "namespace.name did not name the Namespace object"; exit 1; }
+          n=$(grep -c 'odoo-mcp.namespaceName' "$CHART/templates/namespace.yaml")
+          [ "$n" -eq 2 ] || { echo "namespace.yaml no longer uses odoo-mcp.namespaceName"; exit 1; }
+          if grep -rn 'odoo-mcp.namespaceName' "$CHART/templates" \
+               | grep -v 'templates/namespace.yaml' | grep -v '_helpers.tpl'; then
+            echo "odoo-mcp.namespaceName is used outside namespace.yaml"; exit 1
+          fi
+          echo "namespace.name affects only the Namespace object"
 
       - name: Chart patches match the repo patches
         run: |

@@ -3,7 +3,12 @@ Side-effect allow-list mounted at ODOO_MCP_POLICY_FILE. Methods NOT listed here
 are refused by the MCP server even when writes are enabled, so this file - not
 the GUI toggles - is the precise lever for what an agent may trigger in Odoo.
 */ -}}
-{{- if and .Values.server.enabled .Values.policy.enabled }}
+{{- /*
+`policy.create: false` mounts a policy ConfigMap that already exists instead of
+rendering one. Two MCP instances in the same namespace share a single policy
+file, and only one release may own that object.
+*/ -}}
+{{- if and .Values.server.enabled .Values.policy.enabled .Values.policy.create }}
 ---
 apiVersion: v1
 kind: ConfigMap

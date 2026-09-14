@@ -1,0 +1,185 @@
+# Instance values for cindytech-odoo-mcp in namespace cindytech.
+# Generated from the live Deployment: every field below was read off the
+# cluster, so `helm template` reproduces the running pod template exactly.
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+# SAFETY: selectorLabels is IMMUTABLE on a live Deployment. It must stay
+#         exactly as generated or the upgrade is rejected outright.
+
+storageClassName: longhorn
+
+baseName: cindytech-odoo-mcp
+selectorLabels:
+  app.kubernetes.io/component: "mcp-odoo"
+  app.kubernetes.io/name: "cindytech"
+
+service:
+  name: cindytech-odoo-mcp-svc
+  ports:
+    - name: mcp
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: proxy
+      port: 8001
+      protocol: TCP
+      targetPort: 8001
+
+odoo:
+  url: http://cindytech-odoo-svc:8069
+  db: cindytech
+  username: admin
+  timeout: "30"
+  verifySsl: ""
+
+secrets:
+  create: false
+  existingSecret: mcp-odoo-secrets
+  passwordKey: odoo-password
+
+server:
+  # Env ORDER is part of the pod template - this is what makes the
+  # takeover a no-op rollout.
+  envOrder:
+    - ODOO_URL
+    - ODOO_DB
+    - ODOO_USERNAME
+    - ODOO_PASSWORD
+    - ODOO_TIMEOUT
+    - ODOO_MCP_ENABLE_WRITES
+    - ODOO_MCP_ALLOW_UNKNOWN_METHODS
+    - MCP_CHATTER_DIRECT
+    - ODOO_MCP_MAX_ATTACHMENT_BYTES
+    - ODOO_MCP_ALLOW_DIRECT_WRITES
+    - ODOO_MCP_ELICIT_WRITES
+    - MCP_ADMIN_CONFIG
+    - MCP_ALLOWED_HOSTS
+    - MCP_ALLOW_REMOTE_HTTP
+  allowedHosts:
+    - localhost
+    - mcp-odoo-proxy.cindytech.svc.cluster.local
+    - mcp-odoo.cindytech.svc.cluster.local
+    - localhost
+    - 127.0.0.1
+    - localhost:8000
+    - localhost:8000
+  enableWrites: "1"
+  allowDirectWrites: "1"
+  allowUnknownMethods: "1"
+  elicitWrites: "0"
+  maxAttachmentBytes: "16777216"
+  chatterDirect: "1"
+  allowRemoteHttp: "1"
+  applyPatches: false
+  portName: mcp
+  # The Deployment is cindytech-odoo-mcp but its container is still plain mcp-odoo.
+  containerName: mcp-odoo
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+  startupProbe:
+    failureThreshold: 30
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 3
+  inProcessAdmin:
+    enabled: true
+    port: 8080
+  livenessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 5
+  readinessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 5
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-06-29T13:35:27+08:00"
+
+podSecurityContext:
+  fsGroup: 1000
+automountServiceAccountToken: false
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+
+policy:
+  enabled: false
+
+proxy:
+  # The nginx token gate runs as a sidecar in this pod, not as its own
+  # Deployment, and both ports are published on the one Service above.
+  enabled: true
+  mode: sidecar
+  containerName: mcp-odoo-proxy
+  portName: proxy
+  port: 8001
+  volumeName: nginx-config
+  cacheVolumeName: nginx-cache
+  runVolumeName: nginx-run
+  config:
+    create: false
+    existingConfigMap: cindytech-odoo-mcp-proxy-config
+  image:
+    repository: nginx
+    tag: alpine
+    pullPolicy: IfNotPresent
+  env:
+    - name: ODOO_MCP_ALLOW_UNKNOWN_METHODS
+      value: '0'
+    - name: ODOO_MCP_MAX_ATTACHMENT_BYTES
+      value: '16777216'
+    - name: ODOO_TIMEOUT
+      value: '30'
+    - name: ODOO_MCP_POLICY_FILE
+      value: /app/odoo_mcp_policy.json
+  livenessProbe:
+    failureThreshold: 3
+    httpGet:
+      path: /health
+      port: 8001
+      scheme: HTTP
+    initialDelaySeconds: 5
+    periodSeconds: 30
+    successThreshold: 1
+    timeoutSeconds: 3
+  readinessProbe:
+    failureThreshold: 3
+    httpGet:
+      path: /health
+      port: 8001
+      scheme: HTTP
+    initialDelaySeconds: 3
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 3
+  resources:
+    limits:
+      cpu: 50m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 16Mi
+
+initConfig:
+  enabled: true
+  existingConfigMap: mcp-admin-config
+  # The live init container carries no env (it only runs `cp`).
+  env: []
+
+persistence:
+  enabled: true
+  emptyDir: true

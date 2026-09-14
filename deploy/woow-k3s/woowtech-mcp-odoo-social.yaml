@@ -1,0 +1,121 @@
+# Instance values for the mcp-odoo-social release in namespace woowtech-odoo.
+#
+# Same config-driven shape as puhsu: the container gets no Odoo env, every
+# setting comes from /data/config.json, and it boots through a Python program
+# embedded in the pod spec. That program is carried here VERBATIM as data -
+# reproducing it exactly is the only way to take the object over without a
+# restart. Do not 'tidy' these strings.
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+
+storageClassName: longhorn
+
+baseName: mcp-odoo-social
+imagePullSecrets:
+  - name: mcp-admin-ghcr
+
+service:
+  ports:
+    - name: mcp
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: admin
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+
+# Not used by this instance - it reads the connection from config.json. Only
+# present because the chart requires them.
+odoo:
+  url: https://aiot.woowtech.io
+  db: woow_prod
+  username: admin
+
+secrets:
+  create: false
+  existingSecret: mcp-odoo-secrets
+  passwordKey: odoo-password
+
+server:
+  containerName: mcp-odoo
+  commandOverride:
+    - python3
+    - -c
+    - 'import json,os,subprocess
+    
+      cfg=json.load(open(os.environ.get(''MCP_ADMIN_CONFIG'',''/data/config.json'')))
+    
+      m=cfg.get(''mcp_server'',{}) or {}
+    
+      env=dict(os.environ)
+    
+      env.update({k:str(v) for k,v in (m.get(''env'') or {}).items()})
+    
+      args=m.get(''args'') or [''--transport'',''streamable-http'',''--host'',''0.0.0.0'',''--port'',''8000'',''--path'',''/mcp'']
+    
+      if ''--allow-remote-http'' not in args: args=args+[''--allow-remote-http'']
+    
+      subprocess.Popen([''odoo-mcp'']+args,env=env)
+    
+      os.execvp(''uvicorn'',[''uvicorn'',''odoo_mcp_admin.main:app'',''--host'',''0.0.0.0'',''--port'',''8080''])
+    
+      '
+  envOrder:
+    - MCP_ADMIN_CONFIG
+  # Never emitted: MCP_ALLOWED_HOSTS is not in envOrder. Present only to get
+  # past the chart's required() guard.
+  allowedHosts:
+    - localhost
+  ports:
+    - containerPort: 8000
+      name: mcp
+    - containerPort: 8080
+      name: admin
+  applyPatches: false
+  # Part of the live pod template (a past `kubectl rollout restart`).
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-09-09T08:51:15+08:00"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+policy:
+  enabled: true
+  mountPath: /app/odoo_mcp_policy.json
+  # Shared with the mcp-odoo release in this namespace, which owns the object.
+  create: false
+  configMapName: mcp-odoo-policy
+
+proxy:
+  enabled: true
+  volumeName: cfg
+  config:
+    create: false
+    existingConfigMap: mcp-odoo-social-proxy-config
+  servicePortName: proxy
+  portName: proxy
+  port: 8001
+  # The live nginx container declares NO requests or limits. This must be an
+  # explicit null, not {}: Helm deep-merges values, so an empty map would leave
+  # the chart's default requests/limits in place and change the pod template.
+  resources: null
+
+initConfig:
+  enabled: true
+  existingConfigMap: mcp-odoo-social-admin-config
+  command:
+    - sh
+    - -c
+    - if [ ! -f /data/config.json ]; then cp /config-src/config.json /data/config.json;
+      fi
+  env: []
+
+persistence:
+  enabled: true
+  emptyDir: false
+  existingClaim: mcp-odoo-social-admin-data

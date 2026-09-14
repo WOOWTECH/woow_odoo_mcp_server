@@ -24,7 +24,7 @@ spec:
   replicas: {{ .Values.server.replicas }}
   selector:
     matchLabels:
-      app: {{ include "odoo-mcp.name" . }}
+      {{- include "odoo-mcp.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.server.podAnnotations }}
@@ -32,80 +32,155 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        app: {{ include "odoo-mcp.name" . }}
+        {{- include "odoo-mcp.podLabels" . | nindent 8 }}
     spec:
+      {{- if not (kindIs "invalid" .Values.automountServiceAccountToken) }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
+      {{- if .Values.server.commandOverride }}
+      {{- /*
+      One tenant's MCP pod does not run any shape this chart models: it is
+      config-driven, its whole configuration comes from /data/config.json which
+      the admin console writes, and it boots through a Python program embedded
+      in the pod spec. That program is DATA, not something to re-derive from
+      values - reproducing it exactly is the only way to take the object over
+      without restarting it. Anything here replaces the generated command
+      wholesale, so odoo-mcp.serverCommand and its knobs do not apply.
+      */}}
+      - command:
+        {{- toYaml .Values.server.commandOverride | nindent 8 }}
+      {{- else }}
       - command:
         - sh
         - -c
         - {{ include "odoo-mcp.serverCommand" . | quote }}
+      {{- end }}
         env:
-        {{- if .Values.initConfig.enabled }}
-        - name: MCP_ADMIN_CONFIG
-          value: /data/config.json
+        {{- /*
+        ENV ORDER IS LOAD-BEARING. It is part of the pod template, so a
+        takeover that reorders it rolls the pod even though nothing about the
+        container actually changed. Four orderings are live across the Odoo
+        tenants (different vintages of the original kubectl manifests), so the
+        order is data, not template structure: `server.envOrder` lists the
+        names to emit and in what sequence, and a name left out is not emitted
+        at all. That is also how the in-process-admin shape drops MCP_TRANSPORT
+        and the MCP_HTTP_* trio - it simply does not list them.
+        */ -}}
+        {{- $v := dict
+            "ODOO_URL" (required "odoo.url is required" .Values.odoo.url)
+            "ODOO_DB" (required "odoo.db is required" .Values.odoo.db)
+            "ODOO_USERNAME" (required "odoo.username is required" .Values.odoo.username)
+            "ODOO_TIMEOUT" .Values.odoo.timeout
+            "ODOO_MCP_ENABLE_WRITES" .Values.server.enableWrites
+            "ODOO_MCP_ALLOW_DIRECT_WRITES" .Values.server.allowDirectWrites
+            "ODOO_MCP_ALLOW_UNKNOWN_METHODS" .Values.server.allowUnknownMethods
+            "ODOO_MCP_ELICIT_WRITES" .Values.server.elicitWrites
+            "ODOO_MCP_MAX_ATTACHMENT_BYTES" .Values.server.maxAttachmentBytes
+            "MCP_CHATTER_DIRECT" .Values.server.chatterDirect
+            "MCP_TRANSPORT" .Values.server.transport
+            "MCP_HTTP_HOST" "0.0.0.0"
+            "MCP_HTTP_PORT" .Values.server.port
+            "MCP_HTTP_PATH" .Values.server.path
+            "MCP_ALLOWED_HOSTS" (include "odoo-mcp.allowedHosts" .)
+            "MCP_ALLOW_REMOTE_HTTP" .Values.server.allowRemoteHttp
+        -}}
+        {{- /*
+        Three vars exist only when the feature behind them does. Listing one in
+        envOrder without its feature is a no-op rather than an error, so a
+        single envOrder can describe a tenant with or without the policy file.
+        Any OTHER unknown name is a typo and fails the render.
+        */ -}}
+        {{- if .Values.odoo.verifySsl }}
+        {{- $v = set $v "ODOO_VERIFY_SSL" .Values.odoo.verifySsl -}}
         {{- end }}
-        - name: ODOO_URL
-          value: {{ required "odoo.url is required" .Values.odoo.url | quote }}
-        - name: ODOO_DB
-          value: {{ required "odoo.db is required" .Values.odoo.db | quote }}
-        - name: ODOO_USERNAME
-          value: {{ required "odoo.username is required" .Values.odoo.username | quote }}
+        {{- if .Values.policy.enabled }}
+        {{- $v = set $v "ODOO_MCP_POLICY_FILE" .Values.policy.mountPath -}}
+        {{- end }}
+        {{- if .Values.initConfig.enabled }}
+        {{- $v = set $v "MCP_ADMIN_CONFIG" "/data/config.json" -}}
+        {{- end }}
+        {{- $optional := list "ODOO_VERIFY_SSL" "ODOO_MCP_POLICY_FILE" "MCP_ADMIN_CONFIG" -}}
+        {{- range $name := .Values.server.envOrder }}
+        {{- if eq $name "ODOO_PASSWORD" }}
+        {{- if $.Values.secrets.plainPassword }}
+        {{- /*
+        One live pod carries the Odoo password as a PLAIN env value instead of a
+        secretKeyRef. Reproducing its pod template exactly is the only way to
+        take it over without a restart, so the chart can render it - but the
+        value must never be committed: the instance file holds a placeholder and
+        the real password is passed with --set-string at takeover time. Moving
+        this instance to a secretKeyRef is a deliberate change that costs one
+        restart, and is listed in the README follow-ups.
+        */}}
+        - name: ODOO_PASSWORD
+          value: {{ $.Values.secrets.plainPassword | quote }}
+        {{- else }}
         - name: ODOO_PASSWORD
           valueFrom:
             secretKeyRef:
-              key: {{ .Values.secrets.passwordKey }}
-              name: {{ .Values.secrets.existingSecret }}
-        - name: ODOO_TIMEOUT
-          value: {{ .Values.odoo.timeout | quote }}
-        - name: ODOO_VERIFY_SSL
-          value: {{ .Values.odoo.verifySsl | quote }}
-        - name: ODOO_MCP_ENABLE_WRITES
-          value: {{ .Values.server.enableWrites | quote }}
-        - name: ODOO_MCP_ALLOW_DIRECT_WRITES
-          value: {{ .Values.server.allowDirectWrites | quote }}
-        - name: ODOO_MCP_ALLOW_UNKNOWN_METHODS
-          value: {{ .Values.server.allowUnknownMethods | quote }}
-        - name: ODOO_MCP_ELICIT_WRITES
-          value: {{ .Values.server.elicitWrites | quote }}
-        - name: ODOO_MCP_MAX_ATTACHMENT_BYTES
-          value: {{ .Values.server.maxAttachmentBytes | quote }}
-        {{- if .Values.policy.enabled }}
-        - name: ODOO_MCP_POLICY_FILE
-          value: {{ .Values.policy.mountPath }}
+              key: {{ $.Values.secrets.passwordKey }}
+              name: {{ $.Values.secrets.existingSecret }}
         {{- end }}
-        - name: MCP_TRANSPORT
-          value: {{ .Values.server.transport }}
-        - name: MCP_HTTP_HOST
-          value: 0.0.0.0
-        - name: MCP_HTTP_PORT
-          value: {{ .Values.server.port | quote }}
-        - name: MCP_HTTP_PATH
-          value: {{ .Values.server.path }}
-        - name: MCP_ALLOW_REMOTE_HTTP
-          value: {{ .Values.server.allowRemoteHttp | quote }}
-        - name: MCP_ALLOWED_HOSTS
-          value: {{ include "odoo-mcp.allowedHosts" . }}
-        - name: MCP_CHATTER_DIRECT
-          value: {{ .Values.server.chatterDirect | quote }}
+        {{- else if hasKey $v $name }}
+        - name: {{ $name }}
+          value: {{ index $v $name | quote }}
+        {{- else if not (has $name $optional) }}
+        {{- fail (printf "server.envOrder lists %s, which this chart has no value for. Add it to the dict in templates/server.yaml or fix the name." $name) }}
+        {{- end }}
+        {{- end }}
         {{- with .Values.server.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
         image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
-        name: {{ include "odoo-mcp.name" . }}
+        name: {{ default (include "odoo-mcp.name" .) .Values.server.containerName }}
+        {{- with .Values.server.livenessProbe }}
+        livenessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.server.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.server.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.server.startupProbe }}
+        startupProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         ports:
+        {{- if .Values.server.ports }}
+        {{- toYaml .Values.server.ports | nindent 8 }}
+        {{- else }}
         - containerPort: {{ .Values.server.port }}
+          {{- with .Values.server.portName }}
+          name: {{ . }}
+          {{- end }}
+        {{- end }}
         resources:
           {{- toYaml .Values.server.resources | nindent 10 }}
-        {{- if or .Values.policy.enabled .Values.server.applyPatches .Values.persistence.enabled }}
+        {{- if .Values.server.volumeMountsOverride }}
+        volumeMounts:
+        {{- toYaml .Values.server.volumeMountsOverride | nindent 8 }}
+        {{- else if or .Values.policy.enabled .Values.server.applyPatches .Values.persistence.enabled .Values.server.extraVolumes }}
         volumeMounts:
         {{- if .Values.policy.enabled }}
         - mountPath: {{ .Values.policy.mountPath }}
-          name: policy
+          name: {{ .Values.policy.volumeName }}
+          {{- if .Values.policy.readOnly }}
+          readOnly: true
+          {{- end }}
           subPath: odoo_mcp_policy.json
         {{- end }}
         {{- if .Values.server.applyPatches }}
@@ -113,17 +188,67 @@ spec:
           name: patch-script
           readOnly: true
         {{- end }}
+        {{- with .Values.server.extraVolumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- if .Values.persistence.enabled }}
         - mountPath: /data
-          name: data
+          name: {{ .Values.persistence.volumeName }}
         {{- end }}
         {{- end }}
+      {{- if eq .Values.proxy.mode "sidecar" }}
+      {{- /*
+      Three tenants run the nginx token gate as a SIDECAR in the MCP pod rather
+      than as its own Deployment, and publish both ports on one Service. It is
+      the same nginx and the same ConfigMap; only the placement differs. The
+      scratch mounts exist because nginx:alpine cannot write to /var/cache/nginx
+      or /var/run when the image's own filesystem is all it has.
+      */}}
+      - image: {{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}
+        imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+        name: {{ .Values.proxy.containerName }}
+        {{- with .Values.proxy.env }}
+        env:
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.proxy.livenessProbe }}
+        livenessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.proxy.port }}
+          {{- with .Values.proxy.portName }}
+          name: {{ . }}
+          {{- end }}
+        {{- with .Values.proxy.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.proxy.resources | nindent 10 }}
+        volumeMounts:
+        - mountPath: /etc/nginx/nginx.conf
+          name: {{ .Values.proxy.volumeName }}
+          readOnly: true
+          subPath: nginx.conf
+        - mountPath: /var/cache/nginx
+          name: {{ .Values.proxy.cacheVolumeName }}
+        - mountPath: /var/run
+          name: {{ .Values.proxy.runVolumeName }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 6 }}
       {{- end }}
       {{- if and .Values.initConfig.enabled .Values.persistence.enabled }}
       initContainers:
+      {{- if .Values.initConfig.command }}
+      {{- /* Raw seed command, for tenants whose init container copies more
+      than config.json or checks for the files first. Data, like the server
+      commandOverride above. */}}
+      - command:
+        {{- toYaml .Values.initConfig.command | nindent 8 }}
+      {{- else }}
       - command:
         - sh
         - -c
@@ -132,55 +257,123 @@ spec:
         {{- else }}
         - cp /config-src/config.json /data/config.json
         {{- end }}
+      {{- end }}
+        {{- if kindIs "invalid" .Values.initConfig.env }}
         env:
         - name: ODOO_MCP_ALLOW_UNKNOWN_METHODS
           value: {{ .Values.server.allowUnknownMethods | quote }}
+        {{- else if .Values.initConfig.env }}
+        env:
+        {{- toYaml .Values.initConfig.env | nindent 8 }}
+        {{- end }}
         image: {{ .Values.busybox.image }}
         imagePullPolicy: {{ .Values.busybox.pullPolicy }}
         name: init-config
         resources: {}
         volumeMounts:
-        - mountPath: /config-src
-          name: config-src
+        {{- if .Values.initConfig.dataFirst }}
         - mountPath: /data
-          name: data
+          name: {{ .Values.persistence.volumeName }}
+        - mountPath: {{ .Values.initConfig.sourceMountPath }}
+          name: {{ .Values.initConfig.sourceVolumeName }}
+        {{- else }}
+        - mountPath: {{ .Values.initConfig.sourceMountPath }}
+          name: {{ .Values.initConfig.sourceVolumeName }}
+        - mountPath: /data
+          name: {{ .Values.persistence.volumeName }}
+        {{- end }}
       {{- end }}
-      {{- if or .Values.policy.enabled .Values.server.applyPatches .Values.persistence.enabled }}
+      {{- if .Values.server.volumesOverride }}
+      {{- /*
+      The whole volume list, verbatim. Same reasoning as commandOverride: list
+      ORDER and mount paths are part of the pod template, and some tenants order
+      them in ways no rule derives. Setting this means the chart derives nothing
+      here, so it must list every volume the containers mount.
+      */}}
       volumes:
+      {{- toYaml .Values.server.volumesOverride | nindent 6 }}
+      {{- else if or .Values.policy.enabled .Values.server.applyPatches .Values.persistence.enabled .Values.server.extraVolumes (eq .Values.proxy.mode "sidecar") }}
+      volumes:
+      {{- /*
+      Volume list ORDER is part of the pod template, and the sidecar tenants
+      list the nginx config first, before the policy file. Reordering it would
+      roll the pod for no reason, so the two shapes render in their own orders.
+      */}}
+      {{- if eq .Values.proxy.mode "sidecar" }}
+      - configMap:
+          name: {{ include "odoo-mcp.proxyConfigMap" . }}
+        name: {{ .Values.proxy.volumeName }}
+      {{- end }}
       {{- if .Values.policy.enabled }}
       - configMap:
           name: {{ include "odoo-mcp.policyConfigMap" . }}
-        name: policy
+        name: {{ .Values.policy.volumeName }}
+      {{- end }}
+      {{- if eq .Values.proxy.mode "sidecar" }}
+      - emptyDir: {}
+        name: {{ .Values.proxy.cacheVolumeName }}
+      - emptyDir: {}
+        name: {{ .Values.proxy.runVolumeName }}
       {{- end }}
       {{- if .Values.server.applyPatches }}
       - configMap:
           name: {{ include "odoo-mcp.patchConfigMap" . }}
         name: patch-script
       {{- end }}
-      {{- if and .Values.initConfig.enabled .Values.persistence.enabled }}
+      {{- with .Values.server.extraVolumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- /*
+      `initConfig.dataFirst` swaps this pair: one tenant lists the data volume
+      before the seed ConfigMap, and volume order is part of the pod template.
+      */}}
+      {{- if and .Values.initConfig.enabled .Values.persistence.enabled (not .Values.initConfig.dataFirst) }}
       - configMap:
           name: {{ required "initConfig.existingConfigMap is required when initConfig.enabled=true" .Values.initConfig.existingConfigMap }}
-        name: config-src
+        name: {{ .Values.initConfig.sourceVolumeName }}
       {{- end }}
       {{- if .Values.persistence.enabled }}
-      - name: data
+      - name: {{ .Values.persistence.volumeName }}
+        {{- if .Values.persistence.emptyDir }}
+        {{- /*
+        Several live tenants back /data with an emptyDir, not a PVC: config.json
+        is copied in by the init container on every start, so nothing needs to
+        survive a restart. Rendering a PVC for them would change the pod template
+        and roll the pod on takeover.
+        */}}
+        emptyDir: {}
+        {{- else }}
         persistentVolumeClaim:
           claimName: {{ include "odoo-mcp.dataClaim" . }}
+        {{- end }}
+      {{- end }}
+      {{- if and .Values.initConfig.enabled .Values.persistence.enabled .Values.initConfig.dataFirst }}
+      - configMap:
+          name: {{ required "initConfig.existingConfigMap is required when initConfig.enabled=true" .Values.initConfig.existingConfigMap }}
+        name: {{ .Values.initConfig.sourceVolumeName }}
       {{- end }}
       {{- end }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "odoo-mcp.name" . }}
+  name: {{ include "odoo-mcp.serviceName" . }}
   namespace: {{ include "odoo-mcp.ns" . }}
   {{- with (include "odoo-mcp.labels" .) }}
   {{- . | nindent 2 }}
   {{- end }}
 spec:
   ports:
+  {{- if .Values.service.ports }}
+  {{- /*
+  Tenants whose MCP runs the proxy as a sidecar publish BOTH ports on this one
+  Service instead of giving the proxy its own, so the port list is data.
+  */}}
+  {{- toYaml .Values.service.ports | nindent 2 }}
+  {{- else }}
   - port: {{ .Values.server.port }}
     targetPort: {{ .Values.server.port }}
+  {{- end }}
   selector:
-    app: {{ include "odoo-mcp.name" . }}
+    {{- include "odoo-mcp.selectorLabels" . | nindent 4 }}
 {{- end }}

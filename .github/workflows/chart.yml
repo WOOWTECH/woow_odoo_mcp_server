@@ -114,14 +114,54 @@ jobs:
             esac
           done
           echo "every template renders in at least one combination"
-          # nodeSelector is a test-only placement knob: it must add NOTHING to a
-          # live pod template, and it must reach every pod when it is set
-          # (server, proxy, console and the helm-test pod).
+          # nodeSelector must reach every pod when it is set (server, proxy,
+          # console and the helm-test pod). Some live tenants really do pin to
+          # the control-plane node, so it is no longer absent by definition -
+          # but komibright is not one of them and its render must stay clean.
           grep -q 'nodeSelector' /tmp/instance.yaml \
-            && fail "the instance render must not contain a nodeSelector"
+            && fail "the komibright render must not contain a nodeSelector"
           n=$(grep -c 'kubernetes.io/hostname: node-a' /tmp/full.yaml || true)
           [ "$n" -eq 4 ] || fail "nodeSelector reached $n of 4 pod templates"
-          echo "nodeSelector: absent from the instance render, on all 4 pods when set"
+          echo "nodeSelector: absent from the komibright render, on all 4 pods when set"
+
+      - name: server.envOrder drives the env verbatim
+        run: |
+          fail() { echo "FAIL: $1"; exit 1; }
+          # Env ORDER is part of the pod template: a chart change that reorders
+          # it restarts every tenant's MCP server. The rendered order must be
+          # exactly the list in the values file, name for name.
+          pip install --quiet pyyaml
+          python3 - <<'PY'
+          import glob, subprocess, sys, yaml
+          bad = []
+          for f in sorted(glob.glob("deploy/woow-k3s/*.yaml")):
+              vals = yaml.safe_load(open(f))
+              want = (vals.get("server") or {}).get("envOrder")
+              if not want:
+                  continue
+              ns = f.split("/")[-1][:-5]
+              # The MCP Deployment is not always called mcp-odoo: the tenants whose
+              # MCP is part of a full Odoo stack name it <tenant>-mcp-odoo.
+              dep = vals.get("baseName") or "mcp-odoo"
+              out = subprocess.run(
+                  ["helm", "template", "mcp-odoo", "charts/odoo-mcp", "-n", ns,
+                   "-f", f, "--skip-tests"], capture_output=True, text=True, check=True).stdout
+              for d in yaml.safe_load_all(out):
+                  if d and d["kind"] == "Deployment" and d["metadata"]["name"] == dep:
+                      got = [e["name"] for e in d["spec"]["template"]["spec"]["containers"][0]["env"]]
+                      # optional vars drop out when their feature is off
+                      want_r = [n for n in want if n in got]
+                      if got != want_r:
+                          bad.append(f"{f}\n  want {want_r}\n  got  {got}")
+          sys.exit("\n".join(bad)) if bad else print(
+              "every instance renders its env in the declared order")
+          PY
+          # A name the chart has no value for must fail loudly, not render empty.
+          helm template mcp-odoo "$CHART" -n demo \
+            --set odoo.url=https://x,odoo.db=x,server.allowedHosts={x} \
+            --set server.envOrder={ODOO_URL,NOT_A_REAL_VAR} > /dev/null 2>&1 \
+            && fail "an unknown name in server.envOrder rendered without failing"
+          echo "an unknown server.envOrder name fails the render"
 
       - name: The documented tarball install path works
         run: |
@@ -203,7 +243,7 @@ jobs:
           bad = []
           v = yaml.safe_load(open("charts/odoo-mcp/values.yaml"))
           s = v["secrets"]
-          for k in ("odooPassword",):
+          for k in ("odooPassword", "plainPassword"):
               if s[k]:
                   bad.append(f"values.yaml secrets.{k} must be empty")
           for k, val in s["admin"].items():
@@ -229,6 +269,12 @@ jobs:
                       (sec.get("admin") or {}).get(k) for k in
                       ("adminPassword", "mcpAuthToken", "jwtSecret")):
                   bad.append(f"{f} must not carry secret values")
+              # Two live pods carry the Odoo password as a plain env value, so the
+              # chart can render one - but the instance file must hold only the
+              # placeholder, with the real value passed by --set-string.
+              pp = sec.get("plainPassword")
+              if pp and not (pp.startswith("__") and pp.endswith("__")):
+                  bad.append(f"{f} secrets.plainPassword must be a __PLACEHOLDER__")
               if px.get("authToken"):
                   bad.append(f"{f} must not carry proxy.config.authToken")
           # Example files are placeholders only.

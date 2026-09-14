@@ -1,4 +1,4 @@
-# Instance values for the komibright tenant on woow-k3s.
+# Instance values for the markstudio-odoo tenant on woow-k3s.
 # Generated from the live Deployment and verified with `kubectl diff`:
 # the rendered pod template is byte-identical, so a takeover rolls nothing.
 #
@@ -12,8 +12,8 @@
 storageClassName: longhorn
 
 odoo:
-  url: https://komibright-odoo.woowtech.io
-  db: komibright
+  url: https://markstudio-odoo.woowtech.io
+  db: markstudio
   username: admin
   timeout: "30"
   verifySsl: "1"
@@ -48,10 +48,10 @@ server:
     - MCP_ALLOWED_HOSTS
     - MCP_CHATTER_DIRECT
   allowedHosts:
-    - komibright-mcp-odoo.woowtech.io
+    - markstudio-mcp-odoo.woowtech.io
     - localhost
-    - mcp-odoo-proxy.komibright.svc.cluster.local
-    - mcp-odoo.komibright.svc.cluster.local
+    - mcp-odoo-proxy.markstudio-odoo.svc.cluster.local
+    - mcp-odoo.markstudio-odoo.svc.cluster.local
     - 127.0.0.1
   enableWrites: "1"
   allowDirectWrites: "1"
@@ -64,11 +64,11 @@ server:
   # The live command only sources the patch script where the pod actually
   # mounts mcp-odoo-patch; asserting it either way keeps the command identical.
   applyPatches: true
-  patchCommandStyle: inline
+  patchCommandStyle: continuation
   # Part of the live pod template (a past `kubectl rollout restart`). Carried
   # here so a takeover renders the identical template and rolls nothing.
   podAnnotations:
-    kubectl.kubernetes.io/restartedAt: "2026-07-08T17:06:07+08:00"
+    kubectl.kubernetes.io/restartedAt: "2026-06-25T17:52:58+08:00"
 
 policy:
   enabled: true
@@ -79,11 +79,23 @@ initConfig:
 
 proxy:
   enabled: true
-  volumeName: config
+  volumeName: conf
+  readinessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    successThreshold: 1
+    tcpSocket:
+      port: 8001
+    timeoutSeconds: 1
+  # The proxy is pinned to the control-plane node but the server is not.
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: "true"
   podAnnotations:
-    kubectl.kubernetes.io/restartedAt: "2026-06-24T14:20:25+08:00"
+    kubectl.kubernetes.io/restartedAt: "2026-06-29T22:00:32+08:00"
 
 persistence:
   enabled: true
-  emptyDir: false
-  name: mcp-admin-data
+  # /data is a live emptyDir, not a PVC: config.json is re-seeded by the
+  # init container on every start, so there is nothing to persist.
+  emptyDir: true

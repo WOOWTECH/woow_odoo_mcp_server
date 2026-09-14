@@ -1,0 +1,141 @@
+# Instance values for the mcp-odoo release in namespace apun.
+# Generated from the live objects; every field was read off the cluster.
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+
+storageClassName: longhorn
+
+baseName: mcp-odoo
+
+odoo:
+  url: http://apun-odoo-svc:8069
+  db: odoo
+  username: admin
+  timeout: "30"
+  verifySsl: ""
+
+secrets:
+  create: false
+  existingSecret: mcp-odoo-secrets
+  passwordKey: odoo-password
+
+server:
+  envOrder:
+    - ODOO_URL
+    - ODOO_DB
+    - ODOO_USERNAME
+    - ODOO_PASSWORD
+    - ODOO_TIMEOUT
+    - ODOO_MCP_ENABLE_WRITES
+    - ODOO_MCP_ALLOW_DIRECT_WRITES
+    - ODOO_MCP_ALLOW_UNKNOWN_METHODS
+    - MCP_CHATTER_DIRECT
+    - ODOO_MCP_MAX_ATTACHMENT_BYTES
+    - ODOO_MCP_POLICY_FILE
+    - ODOO_MCP_ELICIT_WRITES
+    - MCP_ADMIN_CONFIG
+    - MCP_ALLOWED_HOSTS
+    - MCP_ALLOW_REMOTE_HTTP
+  allowedHosts:
+    - apun-mcp-odoo.woowtech.io
+    - localhost
+    - mcp-odoo-proxy.apun.svc.cluster.local
+    - mcp-odoo.apun.svc.cluster.local
+    - localhost
+    - 127.0.0.1
+  enableWrites: "1"
+  allowDirectWrites: "1"
+  allowUnknownMethods: "1"
+  elicitWrites: "0"
+  maxAttachmentBytes: "16777216"
+  chatterDirect: "1"
+  allowRemoteHttp: "1"
+  applyPatches: false
+  inProcessAdmin:
+    enabled: true
+    port: 8080
+  # Verbatim: this tenant mounts the patch ConfigMap at /opt/patches and
+  # lists it LAST, which no rule in the chart derives.
+  volumeMountsOverride:
+    - mountPath: /app/odoo_mcp_policy.json
+      name: policy
+      subPath: odoo_mcp_policy.json
+    - mountPath: /data
+      name: data
+    - mountPath: /opt/patches
+      name: patch-script
+      readOnly: true
+  volumesOverride:
+    - configMap:
+        defaultMode: 420
+        name: mcp-odoo-policy
+      name: policy
+    - configMap:
+        defaultMode: 420
+        name: mcp-admin-config
+      name: config-src
+    - emptyDir: {}
+      name: data
+    - configMap:
+        defaultMode: 420
+        name: mcp-odoo-patch
+      name: patch-script
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+
+policy:
+  enabled: true
+  mountPath: /app/odoo_mcp_policy.json
+
+proxy:
+  enabled: true
+  volumeName: config
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 16Mi
+  # The proxy is NOT pinned to the control-plane node, the server is.
+  nodeSelector: {}
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-08-26T05:24:20+08:00"
+
+admin:
+  enabled: true
+  mode: legacy
+  port: 8080
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  legacyInitImage: busybox
+  legacyInitPullPolicy: Always
+  legacyInitConfigMap: mcp-admin-init-config
+  legacySeedCommand: "[ -f /data/config.json ] || cp /init-config/config.json /data/config.json; [ -f /data/mcp_instructions.txt ] || cp /init-config/mcp_instructions.txt /data/mcp_instructions.txt"
+  dataFromPersistence: false
+  nodeSelector: {}
+  service:
+    ports:
+      - name: admin
+        port: 8080
+        protocol: TCP
+        targetPort: 8080
+      - name: mcp
+        port: 8001
+        protocol: TCP
+        targetPort: 8001
+
+initConfig:
+  enabled: true
+  existingConfigMap: mcp-admin-config
+  env: []
+
+persistence:
+  enabled: true
+  emptyDir: true

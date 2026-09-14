@@ -9,7 +9,7 @@ The rendered nginx.conf therefore CONTAINS that token. proxy.config.create is
 false by default: the live ConfigMap stays a cluster object and the token never
 enters git.
 */ -}}
-{{- if .Values.proxy.enabled }}
+{{- if and .Values.proxy.enabled (ne .Values.proxy.mode "sidecar") }}
 {{- if .Values.proxy.config.create }}
 ---
 apiVersion: v1
@@ -65,7 +65,9 @@ spec:
       labels:
         app: {{ include "odoo-mcp.proxyName" . }}
     spec:
-      {{- with .Values.nodeSelector }}
+      {{- $ns := .Values.nodeSelector }}
+      {{- if not (kindIs "invalid" .Values.proxy.nodeSelector) }}{{ $ns = .Values.proxy.nodeSelector }}{{ end }}
+      {{- with $ns }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -75,16 +77,27 @@ spec:
         name: nginx
         ports:
         - containerPort: {{ .Values.proxy.port }}
+          {{- with .Values.proxy.portName }}
+          name: {{ . }}
+          {{- end }}
+        {{- with .Values.proxy.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- if .Values.proxy.resources }}
         resources:
           {{- toYaml .Values.proxy.resources | nindent 10 }}
+        {{- else }}
+        resources: {}
+        {{- end }}
         volumeMounts:
         - mountPath: /etc/nginx/nginx.conf
-          name: config
+          name: {{ .Values.proxy.volumeName }}
           subPath: nginx.conf
       volumes:
       - configMap:
           name: {{ include "odoo-mcp.proxyConfigMap" . }}
-        name: config
+        name: {{ .Values.proxy.volumeName }}
 ---
 apiVersion: v1
 kind: Service
@@ -96,7 +109,10 @@ metadata:
   {{- end }}
 spec:
   ports:
-  - port: {{ .Values.proxy.port }}
+  - {{- with .Values.proxy.servicePortName }}
+    name: {{ . }}
+    {{- end }}
+    port: {{ .Values.proxy.port }}
     targetPort: {{ .Values.proxy.port }}
   selector:
     app: {{ include "odoo-mcp.proxyName" . }}

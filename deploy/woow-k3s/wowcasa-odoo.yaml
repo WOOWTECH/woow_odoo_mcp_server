@@ -54,7 +54,7 @@ server:
     - localhost
   enableWrites: "1"
   allowDirectWrites: "1"
-  allowUnknownMethods: "0"
+  allowUnknownMethods: "1"
   elicitWrites: "0"
   maxAttachmentBytes: "16777216"
   chatterDirect: "1"

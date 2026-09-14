@@ -98,7 +98,19 @@ server:
   replicas: 1
   # Run patches/*.py (shipped in files/patches/) before starting the server.
   # This is what the live tenants do; it is also what the -patch ConfigMap is for.
+  # Run the admin API inside the SAME container as the MCP server, instead of
+  # as a separate Deployment (admin.enabled). `odoo-mcp` is backgrounded and
+  # uvicorn takes PID 1. This is what most live tenants actually run; it
+  # applies no patches and uses the `odoo-mcp` console script, so it overrides
+  # applyPatches when enabled.
+  inProcessAdmin:
+    enabled: false
+    port: 8080
   applyPatches: true
+  # How the patch-then-start command is joined: `inline` for one long
+  # `a && b && c` line, `continuation` for `a \`+newline+`&& b ...` with a
+  # trailing newline. Both are live; see the comment in _helpers.tpl.
+  patchCommandStyle: inline
   port: 8000
   path: /mcp
   # Hosts the streamable-HTTP server accepts a Host header for. Required:
@@ -120,6 +132,43 @@ server:
   transport: streamable-http
   # Appended after the standard env block.
   extraEnv: []
+  # Which env vars the server container gets, and in what order. Order is part
+  # of the pod template, so this is per-instance data taken off the live pod -
+  # see the comment in templates/server.yaml. A name not listed is not emitted;
+  # ODOO_PASSWORD always renders as a secretKeyRef. The default below is the
+  # most common live vintage.
+  envOrder:
+    - ODOO_URL
+    - ODOO_DB
+    - ODOO_USERNAME
+    - ODOO_PASSWORD
+    - ODOO_TIMEOUT
+    - ODOO_VERIFY_SSL
+    - ODOO_MCP_ENABLE_WRITES
+    - ODOO_MCP_ALLOW_DIRECT_WRITES
+    - ODOO_MCP_ALLOW_UNKNOWN_METHODS
+    - ODOO_MCP_ELICIT_WRITES
+    - ODOO_MCP_MAX_ATTACHMENT_BYTES
+    - ODOO_MCP_POLICY_FILE
+    - MCP_TRANSPORT
+    - MCP_HTTP_HOST
+    - MCP_HTTP_PORT
+    - MCP_HTTP_PATH
+    - MCP_ADMIN_CONFIG
+    - MCP_ALLOWED_HOSTS
+    - MCP_ALLOW_REMOTE_HTTP
+    - MCP_CHATTER_DIRECT
+  # Extra volumes/mounts on the server container, rendered in the same slot the
+  # patch-script volume occupies. One tenant overlays a single patched
+  # server_core.py from a ConfigMap this way instead of running the patch
+  # scripts; the slot matters because volume list order is part of the template.
+  extraVolumes: []
+  extraVolumeMounts: []
+  # Probes on the MCP server container. Empty by default because most live
+  # tenants have none; the ones that do carry a tcpSocket check on server.port
+  # and it is part of their pod template, so a takeover has to reproduce it.
+  livenessProbe: {}
+  readinessProbe: {}
   resources:
     requests:
       cpu: 100m
@@ -158,6 +207,10 @@ policy:
 # need it.
 persistence:
   enabled: false
+  # Back /data with an emptyDir instead of a PVC. Several live tenants do this:
+  # the init container copies config.json in on every start, so nothing has to
+  # survive a restart. No PVC is rendered when this is true.
+  emptyDir: false
   # Name of the PVC. Kept separate from baseName: the live claim is
   # "mcp-admin-data" in every tenant.
   name: mcp-admin-data
@@ -181,6 +234,12 @@ initConfig:
   # Copy unconditionally (live behaviour) or only when /data/config.json is
   # missing. `true` is opt-in because it changes a live pod template.
   keepExisting: false
+  # Env on the init container. It only runs `cp`, so these are inert - but the
+  # live pod templates carry per-tenant sets of them and the takeover has to
+  # reproduce whatever is there byte-for-byte. Leave unset (null) to keep the
+  # historical single ODOO_MCP_ALLOW_UNKNOWN_METHODS var; set `[]` for tenants
+  # whose init container has no env at all; set an explicit list otherwise.
+  env: null
 
 proxy:
   # nginx in front of the MCP server: only /private_<token>/... is proxied,
@@ -213,6 +272,16 @@ proxy:
     limits:
       cpu: 100m
       memory: 64Mi
+  # The name of the nginx.conf volume inside the pod. Purely cosmetic, but it
+  # is part of the live pod template and two vintages exist across tenants
+  # (`config` and the older `conf`), so it has to be selectable to take a
+  # tenant over without rolling its pod.
+  volumeName: config
+  # Some tenants' proxies carry a tcpSocket readiness check, some don't.
+  readinessProbe: {}
+  # Overrides the top-level nodeSelector for the proxy only. One tenant pins
+  # the proxy to the control-plane node while leaving its server unpinned.
+  nodeSelector: {}
 
 # FastAPI admin console + MCP token proxy from this repo (port 8080). Off by
 # default: most tenants run the MCP server only. When enabled, /data must be

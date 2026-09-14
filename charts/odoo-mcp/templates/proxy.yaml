@@ -65,7 +65,7 @@ spec:
       labels:
         app: {{ include "odoo-mcp.proxyName" . }}
     spec:
-      {{- with .Values.nodeSelector }}
+      {{- with (.Values.proxy.nodeSelector | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -75,16 +75,20 @@ spec:
         name: nginx
         ports:
         - containerPort: {{ .Values.proxy.port }}
+        {{- with .Values.proxy.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         resources:
           {{- toYaml .Values.proxy.resources | nindent 10 }}
         volumeMounts:
         - mountPath: /etc/nginx/nginx.conf
-          name: config
+          name: {{ .Values.proxy.volumeName }}
           subPath: nginx.conf
       volumes:
       - configMap:
           name: {{ include "odoo-mcp.proxyConfigMap" . }}
-        name: config
+        name: {{ .Values.proxy.volumeName }}
 ---
 apiVersion: v1
 kind: Service

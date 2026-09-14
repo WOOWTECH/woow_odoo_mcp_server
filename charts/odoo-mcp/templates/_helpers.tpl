@@ -100,14 +100,33 @@ annotations:
 {{- if eq (.Values.server.allowRemoteHttp | toString) "1" -}}
 {{- $args = printf "%s --allow-remote-http" $args -}}
 {{- end -}}
-{{- if .Values.server.applyPatches -}}
+{{- if .Values.server.inProcessAdmin.enabled -}}
+{{- /*
+Third runtime shape, and the most common one live: the MCP server and the admin
+API run in the SAME container - `odoo-mcp` backgrounded, then uvicorn exec'd as
+PID 1 - instead of the admin being its own Deployment. Six tenants run exactly
+this, byte for byte. Note it invokes the `odoo-mcp` console script, not
+`python3 -m odoo_mcp`, and applies no patches.
+*/ -}}
+{{ printf "odoo-mcp %s &\nexec uvicorn odoo_mcp_admin.main:app --host 0.0.0.0 --port %v\n" $args (.Values.server.inProcessAdmin.port | toString) }}
+{{- else if .Values.server.applyPatches -}}
 {{- $cmds := list "echo \"Applying WOOWTECH patches...\"" -}}
 {{- range $p, $_ := .Files.Glob "files/patches/*.py" -}}
 {{- $cmds = append $cmds (printf "python3 /app/patches/%s" (base $p)) -}}
 {{- end -}}
 {{- $cmds = append $cmds "echo \"Starting MCP server...\"" -}}
 {{- $cmds = append $cmds (printf "exec python3 -m odoo_mcp %s" $args) -}}
+{{- /*
+Two vintages of this command are live and they differ ONLY in whitespace: some
+tenants were applied from a one-line string, others from a shell script with
+backslash continuations and a trailing newline. Whitespace is still part of the
+pod template, so the style has to be selectable or the takeover rolls the pod.
+*/ -}}
+{{- if eq .Values.server.patchCommandStyle "continuation" -}}
+{{ printf "%s\n" (join " \\\n&& " $cmds) }}
+{{- else -}}
 {{ join " && " $cmds }}
+{{- end -}}
 {{- else -}}
 {{ printf "exec python3 -m odoo_mcp %s" $args }}
 {{- end -}}

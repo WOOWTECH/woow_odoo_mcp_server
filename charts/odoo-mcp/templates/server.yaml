@@ -44,64 +44,83 @@ spec:
         - -c
         - {{ include "odoo-mcp.serverCommand" . | quote }}
         env:
-        {{- if .Values.initConfig.enabled }}
-        - name: MCP_ADMIN_CONFIG
-          value: /data/config.json
+        {{- /*
+        ENV ORDER IS LOAD-BEARING. It is part of the pod template, so a
+        takeover that reorders it rolls the pod even though nothing about the
+        container actually changed. Four orderings are live across the Odoo
+        tenants (different vintages of the original kubectl manifests), so the
+        order is data, not template structure: `server.envOrder` lists the
+        names to emit and in what sequence, and a name left out is not emitted
+        at all. That is also how the in-process-admin shape drops MCP_TRANSPORT
+        and the MCP_HTTP_* trio - it simply does not list them.
+        */ -}}
+        {{- $v := dict
+            "ODOO_URL" (required "odoo.url is required" .Values.odoo.url)
+            "ODOO_DB" (required "odoo.db is required" .Values.odoo.db)
+            "ODOO_USERNAME" (required "odoo.username is required" .Values.odoo.username)
+            "ODOO_TIMEOUT" .Values.odoo.timeout
+            "ODOO_MCP_ENABLE_WRITES" .Values.server.enableWrites
+            "ODOO_MCP_ALLOW_DIRECT_WRITES" .Values.server.allowDirectWrites
+            "ODOO_MCP_ALLOW_UNKNOWN_METHODS" .Values.server.allowUnknownMethods
+            "ODOO_MCP_ELICIT_WRITES" .Values.server.elicitWrites
+            "ODOO_MCP_MAX_ATTACHMENT_BYTES" .Values.server.maxAttachmentBytes
+            "MCP_CHATTER_DIRECT" .Values.server.chatterDirect
+            "MCP_TRANSPORT" .Values.server.transport
+            "MCP_HTTP_HOST" "0.0.0.0"
+            "MCP_HTTP_PORT" .Values.server.port
+            "MCP_HTTP_PATH" .Values.server.path
+            "MCP_ALLOWED_HOSTS" (include "odoo-mcp.allowedHosts" .)
+            "MCP_ALLOW_REMOTE_HTTP" .Values.server.allowRemoteHttp
+        -}}
+        {{- /*
+        Three vars exist only when the feature behind them does. Listing one in
+        envOrder without its feature is a no-op rather than an error, so a
+        single envOrder can describe a tenant with or without the policy file.
+        Any OTHER unknown name is a typo and fails the render.
+        */ -}}
+        {{- if .Values.odoo.verifySsl }}
+        {{- $v = set $v "ODOO_VERIFY_SSL" .Values.odoo.verifySsl -}}
         {{- end }}
-        - name: ODOO_URL
-          value: {{ required "odoo.url is required" .Values.odoo.url | quote }}
-        - name: ODOO_DB
-          value: {{ required "odoo.db is required" .Values.odoo.db | quote }}
-        - name: ODOO_USERNAME
-          value: {{ required "odoo.username is required" .Values.odoo.username | quote }}
+        {{- if .Values.policy.enabled }}
+        {{- $v = set $v "ODOO_MCP_POLICY_FILE" .Values.policy.mountPath -}}
+        {{- end }}
+        {{- if .Values.initConfig.enabled }}
+        {{- $v = set $v "MCP_ADMIN_CONFIG" "/data/config.json" -}}
+        {{- end }}
+        {{- $optional := list "ODOO_VERIFY_SSL" "ODOO_MCP_POLICY_FILE" "MCP_ADMIN_CONFIG" -}}
+        {{- range $name := .Values.server.envOrder }}
+        {{- if eq $name "ODOO_PASSWORD" }}
         - name: ODOO_PASSWORD
           valueFrom:
             secretKeyRef:
-              key: {{ .Values.secrets.passwordKey }}
-              name: {{ .Values.secrets.existingSecret }}
-        - name: ODOO_TIMEOUT
-          value: {{ .Values.odoo.timeout | quote }}
-        - name: ODOO_VERIFY_SSL
-          value: {{ .Values.odoo.verifySsl | quote }}
-        - name: ODOO_MCP_ENABLE_WRITES
-          value: {{ .Values.server.enableWrites | quote }}
-        - name: ODOO_MCP_ALLOW_DIRECT_WRITES
-          value: {{ .Values.server.allowDirectWrites | quote }}
-        - name: ODOO_MCP_ALLOW_UNKNOWN_METHODS
-          value: {{ .Values.server.allowUnknownMethods | quote }}
-        - name: ODOO_MCP_ELICIT_WRITES
-          value: {{ .Values.server.elicitWrites | quote }}
-        - name: ODOO_MCP_MAX_ATTACHMENT_BYTES
-          value: {{ .Values.server.maxAttachmentBytes | quote }}
-        {{- if .Values.policy.enabled }}
-        - name: ODOO_MCP_POLICY_FILE
-          value: {{ .Values.policy.mountPath }}
+              key: {{ $.Values.secrets.passwordKey }}
+              name: {{ $.Values.secrets.existingSecret }}
+        {{- else if hasKey $v $name }}
+        - name: {{ $name }}
+          value: {{ index $v $name | quote }}
+        {{- else if not (has $name $optional) }}
+        {{- fail (printf "server.envOrder lists %s, which this chart has no value for. Add it to the dict in templates/server.yaml or fix the name." $name) }}
         {{- end }}
-        - name: MCP_TRANSPORT
-          value: {{ .Values.server.transport }}
-        - name: MCP_HTTP_HOST
-          value: 0.0.0.0
-        - name: MCP_HTTP_PORT
-          value: {{ .Values.server.port | quote }}
-        - name: MCP_HTTP_PATH
-          value: {{ .Values.server.path }}
-        - name: MCP_ALLOW_REMOTE_HTTP
-          value: {{ .Values.server.allowRemoteHttp | quote }}
-        - name: MCP_ALLOWED_HOSTS
-          value: {{ include "odoo-mcp.allowedHosts" . }}
-        - name: MCP_CHATTER_DIRECT
-          value: {{ .Values.server.chatterDirect | quote }}
+        {{- end }}
         {{- with .Values.server.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
         image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         name: {{ include "odoo-mcp.name" . }}
+        {{- with .Values.server.livenessProbe }}
+        livenessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.server.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         ports:
         - containerPort: {{ .Values.server.port }}
         resources:
           {{- toYaml .Values.server.resources | nindent 10 }}
-        {{- if or .Values.policy.enabled .Values.server.applyPatches .Values.persistence.enabled }}
+        {{- if or .Values.policy.enabled .Values.server.applyPatches .Values.persistence.enabled .Values.server.extraVolumes }}
         volumeMounts:
         {{- if .Values.policy.enabled }}
         - mountPath: {{ .Values.policy.mountPath }}
@@ -112,6 +131,9 @@ spec:
         - mountPath: /app/patches
           name: patch-script
           readOnly: true
+        {{- end }}
+        {{- with .Values.server.extraVolumeMounts }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
         {{- if .Values.persistence.enabled }}
         - mountPath: /data
@@ -132,9 +154,14 @@ spec:
         {{- else }}
         - cp /config-src/config.json /data/config.json
         {{- end }}
+        {{- if kindIs "invalid" .Values.initConfig.env }}
         env:
         - name: ODOO_MCP_ALLOW_UNKNOWN_METHODS
           value: {{ .Values.server.allowUnknownMethods | quote }}
+        {{- else if .Values.initConfig.env }}
+        env:
+        {{- toYaml .Values.initConfig.env | nindent 8 }}
+        {{- end }}
         image: {{ .Values.busybox.image }}
         imagePullPolicy: {{ .Values.busybox.pullPolicy }}
         name: init-config
@@ -145,7 +172,7 @@ spec:
         - mountPath: /data
           name: data
       {{- end }}
-      {{- if or .Values.policy.enabled .Values.server.applyPatches .Values.persistence.enabled }}
+      {{- if or .Values.policy.enabled .Values.server.applyPatches .Values.persistence.enabled .Values.server.extraVolumes }}
       volumes:
       {{- if .Values.policy.enabled }}
       - configMap:
@@ -157,6 +184,9 @@ spec:
           name: {{ include "odoo-mcp.patchConfigMap" . }}
         name: patch-script
       {{- end }}
+      {{- with .Values.server.extraVolumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
       {{- if and .Values.initConfig.enabled .Values.persistence.enabled }}
       - configMap:
           name: {{ required "initConfig.existingConfigMap is required when initConfig.enabled=true" .Values.initConfig.existingConfigMap }}
@@ -164,8 +194,18 @@ spec:
       {{- end }}
       {{- if .Values.persistence.enabled }}
       - name: data
+        {{- if .Values.persistence.emptyDir }}
+        {{- /*
+        Several live tenants back /data with an emptyDir, not a PVC: config.json
+        is copied in by the init container on every start, so nothing needs to
+        survive a restart. Rendering a PVC for them would change the pod template
+        and roll the pod on takeover.
+        */}}
+        emptyDir: {}
+        {{- else }}
         persistentVolumeClaim:
           claimName: {{ include "odoo-mcp.dataClaim" . }}
+        {{- end }}
       {{- end }}
       {{- end }}
 ---

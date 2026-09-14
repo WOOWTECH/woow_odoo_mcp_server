@@ -1,4 +1,4 @@
-# Instance values for the komibright tenant on woow-k3s.
+# Instance values for the well-101 tenant on woow-k3s.
 # Generated from the live Deployment and verified with `kubectl diff`:
 # the rendered pod template is byte-identical, so a takeover rolls nothing.
 #
@@ -12,11 +12,11 @@
 storageClassName: longhorn
 
 odoo:
-  url: https://komibright-odoo.woowtech.io
-  db: komibright
+  url: https://well-101-odoo.woowtech.io
+  db: well101
   username: admin
   timeout: "30"
-  verifySsl: "1"
+  verifySsl: ""  # live pod has no ODOO_VERIFY_SSL
 
 secrets:
   create: false
@@ -27,48 +27,45 @@ server:
   # Taken verbatim off the live container: env ORDER is part of the pod
   # template, so this is what makes the takeover a no-op rollout.
   envOrder:
-    - MCP_ADMIN_CONFIG
     - ODOO_URL
     - ODOO_DB
     - ODOO_USERNAME
     - ODOO_PASSWORD
     - ODOO_TIMEOUT
-    - ODOO_VERIFY_SSL
     - ODOO_MCP_ENABLE_WRITES
-    - ODOO_MCP_ALLOW_DIRECT_WRITES
     - ODOO_MCP_ALLOW_UNKNOWN_METHODS
-    - ODOO_MCP_ELICIT_WRITES
+    - MCP_CHATTER_DIRECT
     - ODOO_MCP_MAX_ATTACHMENT_BYTES
     - ODOO_MCP_POLICY_FILE
-    - MCP_TRANSPORT
-    - MCP_HTTP_HOST
-    - MCP_HTTP_PORT
-    - MCP_HTTP_PATH
-    - MCP_ALLOW_REMOTE_HTTP
+    - ODOO_MCP_ALLOW_DIRECT_WRITES
+    - ODOO_MCP_ELICIT_WRITES
+    - MCP_ADMIN_CONFIG
     - MCP_ALLOWED_HOSTS
-    - MCP_CHATTER_DIRECT
+    - MCP_ALLOW_REMOTE_HTTP
   allowedHosts:
-    - komibright-mcp-odoo.woowtech.io
+    - well-101-mcp-odoo.woowtech.io
     - localhost
-    - mcp-odoo-proxy.komibright.svc.cluster.local
-    - mcp-odoo.komibright.svc.cluster.local
+    - mcp-odoo-proxy.well-101.svc.cluster.local
+    - mcp-odoo.well-101.svc.cluster.local
+    - localhost
     - 127.0.0.1
+    - localhost:8000
+    - localhost
   enableWrites: "1"
   allowDirectWrites: "1"
-  allowUnknownMethods: "1"
+  allowUnknownMethods: "0"
   elicitWrites: "0"
   maxAttachmentBytes: "16777216"
   chatterDirect: "1"
   allowRemoteHttp: "1"
-  transport: streamable-http
   # The live command only sources the patch script where the pod actually
   # mounts mcp-odoo-patch; asserting it either way keeps the command identical.
-  applyPatches: true
-  patchCommandStyle: inline
-  # Part of the live pod template (a past `kubectl rollout restart`). Carried
-  # here so a takeover renders the identical template and rolls nothing.
-  podAnnotations:
-    kubectl.kubernetes.io/restartedAt: "2026-07-08T17:06:07+08:00"
+  applyPatches: false
+  # The live container runs the MCP server in the background and the admin app
+  # in the foreground on one port, so it carries no MCP_TRANSPORT/MCP_HTTP_* env.
+  inProcessAdmin:
+    enabled: true
+    port: 8080
 
 policy:
   enabled: true
@@ -76,14 +73,17 @@ policy:
 
 initConfig:
   enabled: true
+  # The live init container carries no env at all (it only runs `cp`).
+  env: []
 
 proxy:
   enabled: true
   volumeName: config
   podAnnotations:
-    kubectl.kubernetes.io/restartedAt: "2026-06-24T14:20:25+08:00"
+    kubectl.kubernetes.io/restartedAt: "2026-06-24T14:20:26+08:00"
 
 persistence:
   enabled: true
-  emptyDir: false
-  name: mcp-admin-data
+  # /data is a live emptyDir, not a PVC: config.json is re-seeded by the
+  # init container on every start, so there is nothing to persist.
+  emptyDir: true

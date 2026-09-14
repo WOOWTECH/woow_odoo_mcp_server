@@ -1,0 +1,119 @@
+# Instance values for the hsinpoli-odoo tenant on woow-k3s.
+# Generated from the live Deployment and verified with `kubectl diff`:
+# the rendered pod template is byte-identical, so a takeover rolls nothing.
+#
+# NO SECRETS HERE - the chart only references what already exists:
+#   Secret    mcp-odoo-secrets        (Odoo password)
+#   ConfigMap mcp-odoo-proxy-config   (proxy token / secret URL path)
+#   ConfigMap mcp-admin-config        (/data/config.json)
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+
+storageClassName: longhorn
+
+odoo:
+  url: http://hsinpoli-odoo-svc:8069
+  db: hsinpoli
+  username: admin
+  timeout: "30"
+  verifySsl: ""  # live pod has no ODOO_VERIFY_SSL
+
+secrets:
+  create: false
+  existingSecret: mcp-odoo-secrets
+  passwordKey: odoo-password
+
+server:
+  # Taken verbatim off the live container: env ORDER is part of the pod
+  # template, so this is what makes the takeover a no-op rollout.
+  envOrder:
+    - ODOO_URL
+    - ODOO_DB
+    - ODOO_USERNAME
+    - ODOO_PASSWORD
+    - ODOO_TIMEOUT
+    - ODOO_MCP_ENABLE_WRITES
+    - ODOO_MCP_ALLOW_UNKNOWN_METHODS
+    - MCP_CHATTER_DIRECT
+    - ODOO_MCP_MAX_ATTACHMENT_BYTES
+    - ODOO_MCP_POLICY_FILE
+    - ODOO_MCP_ALLOW_DIRECT_WRITES
+    - ODOO_MCP_ELICIT_WRITES
+    - MCP_ADMIN_CONFIG
+    - MCP_ALLOWED_HOSTS
+    - MCP_ALLOW_REMOTE_HTTP
+  allowedHosts:
+    - hsinpoli-mcp-odoo.woowtech.io
+    - localhost
+    - mcp-odoo-proxy.hsinpoli-odoo.svc.cluster.local
+    - mcp-odoo.hsinpoli-odoo.svc.cluster.local
+    - localhost
+    - 127.0.0.1
+    - localhost:8000
+    - localhost
+  enableWrites: "1"
+  allowDirectWrites: "1"
+  allowUnknownMethods: "0"
+  elicitWrites: "0"
+  maxAttachmentBytes: "16777216"
+  chatterDirect: "1"
+  allowRemoteHttp: "1"
+  # The live command only sources the patch script where the pod actually
+  # mounts mcp-odoo-patch; asserting it either way keeps the command identical.
+  applyPatches: false
+  # The live container runs the MCP server in the background and the admin app
+  # in the foreground on one port, so it carries no MCP_TRANSPORT/MCP_HTTP_* env.
+  inProcessAdmin:
+    enabled: true
+    port: 8080
+  # Verbatim from the live container (including the fields the API server
+  # defaults) so the rendered template matches byte-for-byte.
+  livenessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 1
+  # Verbatim from the live container (including the fields the API server
+  # defaults) so the rendered template matches byte-for-byte.
+  readinessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 1
+
+# The live pod is pinned to the control-plane node.
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+
+policy:
+  enabled: true
+  mountPath: /app/odoo_mcp_policy.json
+
+initConfig:
+  enabled: true
+  # The live init container carries no env at all (it only runs `cp`).
+  env: []
+
+proxy:
+  enabled: true
+  volumeName: conf
+  readinessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    successThreshold: 1
+    tcpSocket:
+      port: 8001
+    timeoutSeconds: 1
+
+persistence:
+  enabled: true
+  # /data is a live emptyDir, not a PVC: config.json is re-seeded by the
+  # init container on every start, so there is nothing to persist.
+  emptyDir: true

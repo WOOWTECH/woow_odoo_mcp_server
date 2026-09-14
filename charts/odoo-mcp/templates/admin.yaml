@@ -13,6 +13,13 @@ this chart):
   - no ServiceAccount is mounted: the console code never calls the Kubernetes
     API (mcp_admin_core/k8s/client.py is imported by nothing), while the Role in
     the old k8s-deploy.yaml could read every Secret in the namespace.
+
+`admin.mode: legacy` renders the OTHER console instead: the hand-written one
+that is actually running in three tenants today. It seeds /data from a
+ConfigMap with busybox, keeps its passwords in that ConfigMap, and mounts no
+Secret. It exists so those three can be taken over WITHOUT a restart; moving
+them to the managed console above is a deliberate, scheduled change, not a
+side effect of adopting Helm.
 */ -}}
 {{- if .Values.admin.enabled }}
 ---
@@ -29,8 +36,10 @@ spec:
   selector:
     matchLabels:
       app: {{ include "odoo-mcp.adminName" . }}
+  {{- if ne .Values.admin.mode "legacy" }}
   strategy:
     type: Recreate
+  {{- end }}
   template:
     metadata:
       {{- with .Values.admin.podAnnotations }}
@@ -40,12 +49,52 @@ spec:
       labels:
         app: {{ include "odoo-mcp.adminName" . }}
     spec:
-      {{- with .Values.nodeSelector }}
+      {{- $ns := .Values.nodeSelector }}
+      {{- if not (kindIs "invalid" .Values.admin.nodeSelector) }}{{ $ns = .Values.admin.nodeSelector }}{{ end }}
+      {{- with $ns }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if ne .Values.admin.mode "legacy" }}
       automountServiceAccountToken: false
+      {{- end }}
+      {{- with .Values.admin.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
       containers:
+      {{- if eq .Values.admin.mode "legacy" }}
+      - env:
+        - name: MCP_ADMIN_CONFIG
+          value: /data/config.json
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: {{ .Values.admin.port }}
+          initialDelaySeconds: 20
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: mcp-admin
+        ports:
+        - containerPort: {{ .Values.admin.port }}
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: {{ .Values.admin.port }}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          {{- toYaml .Values.admin.resources | nindent 10 }}
+        volumeMounts:
+        - mountPath: /data
+          name: data
+      {{- else }}
       - env:
         - name: MCP_ADMIN_CONFIG
           value: /data/config.json
@@ -84,11 +133,27 @@ spec:
         volumeMounts:
         - mountPath: /data
           name: data
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 6 }}
       {{- end }}
-      {{- if .Values.admin.seedConfig }}
+      {{- if eq .Values.admin.mode "legacy" }}
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - {{ .Values.admin.legacySeedCommand | quote }}
+        image: {{ .Values.admin.legacyInitImage }}
+        imagePullPolicy: {{ .Values.admin.legacyInitPullPolicy }}
+        name: init-config
+        resources: {}
+        volumeMounts:
+        - mountPath: /data
+          name: data
+        - mountPath: /init-config
+          name: init-config
+      {{- else if .Values.admin.seedConfig }}
       initContainers:
       - command:
         - python
@@ -152,27 +217,45 @@ spec:
           name: data
       {{- end }}
       volumes:
+      {{- /*
+      The console's /data claim is named independently of the server's. They are
+      ReadWriteOnce, so pointing both pods at one claim wedges whichever lands on
+      the other node with a Multi-Attach error - `admin.existingClaim` exists so
+      a console can own a claim WITHOUT the server mounting it too.
+      */}}
       - name: data
-        {{- if and .Values.persistence.enabled .Values.admin.dataFromPersistence }}
+        {{- if .Values.admin.existingClaim }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.admin.existingClaim }}
+        {{- else if and .Values.persistence.enabled .Values.admin.dataFromPersistence }}
         persistentVolumeClaim:
           claimName: {{ include "odoo-mcp.dataClaim" . }}
         {{- else }}
         emptyDir: {}
         {{- end }}
+      {{- if eq .Values.admin.mode "legacy" }}
+      - configMap:
+          name: {{ required "admin.legacyInitConfigMap is required when admin.mode=legacy" .Values.admin.legacyInitConfigMap }}
+        name: init-config
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "odoo-mcp.adminName" . }}
+  name: {{ default (include "odoo-mcp.adminName" .) .Values.admin.service.name }}
   namespace: {{ include "odoo-mcp.ns" . }}
   {{- with (include "odoo-mcp.labels" .) }}
   {{- . | nindent 2 }}
   {{- end }}
 spec:
   ports:
+  {{- if .Values.admin.service.ports }}
+  {{- toYaml .Values.admin.service.ports | nindent 2 }}
+  {{- else }}
   - name: http
     port: {{ .Values.admin.port }}
     targetPort: {{ .Values.admin.port }}
+  {{- end }}
   selector:
     app: {{ include "odoo-mcp.adminName" . }}
 {{- end }}

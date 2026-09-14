@@ -1,0 +1,176 @@
+# Instance values for evergreen-mcp-odoo in namespace evergreen-odoo.
+# Generated from the live Deployment: every field below was read off the
+# cluster, so `helm template` reproduces the running pod template exactly.
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+# SAFETY: selectorLabels is IMMUTABLE on a live Deployment. It must stay
+#         exactly as generated or the upgrade is rejected outright.
+
+storageClassName: longhorn
+
+baseName: evergreen-mcp-odoo
+selectorLabels:
+  app.kubernetes.io/component: "mcp-odoo"
+  app.kubernetes.io/name: "evergreen"
+podLabels:
+  app.kubernetes.io/part-of: "evergreen"
+
+service:
+  name: evergreen-odoo-mcp-svc
+  ports:
+    - name: mcp
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: proxy
+      port: 8001
+      protocol: TCP
+      targetPort: 8001
+
+odoo:
+  url: http://evergreen-odoo-svc:8069
+  db: evergreen
+  username: admin
+  timeout: "30"
+  verifySsl: ""
+
+secrets:
+  create: false
+  existingSecret: evergreen-mcp-secrets
+  passwordKey: odoo-password
+
+server:
+  # Env ORDER is part of the pod template - this is what makes the
+  # takeover a no-op rollout.
+  envOrder:
+    - ODOO_URL
+    - ODOO_DB
+    - ODOO_USERNAME
+    - ODOO_PASSWORD
+    - ODOO_TIMEOUT
+    - ODOO_MCP_ENABLE_WRITES
+    - ODOO_MCP_ALLOW_UNKNOWN_METHODS
+    - MCP_CHATTER_DIRECT
+    - ODOO_MCP_MAX_ATTACHMENT_BYTES
+    - ODOO_MCP_POLICY_FILE
+    - ODOO_MCP_ALLOW_DIRECT_WRITES
+    - ODOO_MCP_ELICIT_WRITES
+    - MCP_ADMIN_CONFIG
+    - MCP_ALLOWED_HOSTS
+    - MCP_ALLOW_REMOTE_HTTP
+  allowedHosts:
+    - evergreen-mcp.woowtech.io
+    - localhost
+    - mcp-odoo-proxy.evergreen-odoo.svc.cluster.local
+    - mcp-odoo.evergreen-odoo.svc.cluster.local
+    - localhost
+    - 127.0.0.1
+    - localhost:8000
+    - localhost
+  enableWrites: "1"
+  allowDirectWrites: "1"
+  allowUnknownMethods: "1"
+  elicitWrites: "0"
+  maxAttachmentBytes: "16777216"
+  chatterDirect: "1"
+  allowRemoteHttp: "1"
+  applyPatches: false
+  portName: mcp-http
+  # The Deployment is evergreen-mcp-odoo but its container is still plain mcp-odoo.
+  containerName: mcp-odoo
+  startupProbe:
+    failureThreshold: 12
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 1
+  inProcessAdmin:
+    enabled: true
+    port: 8080
+  livenessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 5
+  readinessProbe:
+    failureThreshold: 3
+    periodSeconds: 10
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 3
+
+podSecurityContext:
+  fsGroup: 1000
+automountServiceAccountToken: false
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+
+policy:
+  enabled: true
+  mountPath: /app/odoo_mcp_policy.json
+  volumeName: mcp-policy
+  configMapName: evergreen-odoo-mcp-policy
+  readOnly: true
+
+proxy:
+  # The nginx token gate runs as a sidecar in this pod, not as its own
+  # Deployment, and both ports are published on the one Service above.
+  enabled: true
+  mode: sidecar
+  containerName: mcp-odoo-proxy
+  portName: proxy-http
+  port: 8001
+  volumeName: mcp-proxy-config
+  cacheVolumeName: mcp-proxy-cache
+  runVolumeName: mcp-proxy-run
+  config:
+    create: false
+    existingConfigMap: evergreen-odoo-mcp-proxy-config
+  image:
+    repository: nginx
+    tag: alpine
+    pullPolicy: IfNotPresent
+  env:
+    - name: ODOO_MCP_ALLOW_UNKNOWN_METHODS
+      value: '1'
+  livenessProbe:
+    failureThreshold: 3
+    httpGet:
+      path: /health
+      port: 8001
+      scheme: HTTP
+    initialDelaySeconds: 5
+    periodSeconds: 15
+    successThreshold: 1
+    timeoutSeconds: 3
+  readinessProbe:
+    failureThreshold: 3
+    httpGet:
+      path: /health
+      port: 8001
+      scheme: HTTP
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 3
+  resources:
+    limits:
+      cpu: 50m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 16Mi
+
+initConfig:
+  enabled: true
+  existingConfigMap: mcp-admin-config
+
+persistence:
+  enabled: true
+  emptyDir: true

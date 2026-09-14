@@ -1,0 +1,197 @@
+# Instance values for the mcp-odoo release in namespace woowtech-odoo.
+# Generated from the live objects; every field was read off the cluster.
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+
+storageClassName: longhorn
+
+baseName: mcp-odoo
+imagePullSecrets:
+  - name: mcp-admin-ghcr
+
+odoo:
+  url: http://paas-odoo.paas-system.svc
+  db: woow_prod
+  username: woowtech@designsmart.com.tw
+  timeout: "30"
+  verifySsl: ""
+
+secrets:
+  create: false
+  existingSecret: mcp-odoo-secrets
+  passwordKey: odoo-password
+
+server:
+  envOrder:
+    - ODOO_URL
+    - ODOO_DB
+    - ODOO_USERNAME
+    - ODOO_PASSWORD
+    - ODOO_TIMEOUT
+    - ODOO_MCP_ENABLE_WRITES
+    - ODOO_MCP_ALLOW_DIRECT_WRITES
+    - ODOO_MCP_ALLOW_UNKNOWN_METHODS
+    - MCP_CHATTER_DIRECT
+    - ODOO_MCP_MAX_ATTACHMENT_BYTES
+    - ODOO_MCP_POLICY_FILE
+    - ODOO_MCP_ELICIT_WRITES
+    - MCP_ADMIN_CONFIG
+    - MCP_ALLOWED_HOSTS
+    - MCP_ALLOW_REMOTE_HTTP
+  allowedHosts:
+    - woowtech-mcp-odoo.woowtech.io
+    - localhost
+    - mcp-odoo-proxy.woowtech-odoo.svc.cluster.local
+    - mcp-odoo.woowtech-odoo.svc.cluster.local
+    - localhost
+    - 127.0.0.1
+    - localhost:8000
+    - localhost
+  enableWrites: "1"
+  allowDirectWrites: "1"
+  allowUnknownMethods: "1"
+  elicitWrites: "0"
+  maxAttachmentBytes: "16777216"
+  chatterDirect: "1"
+  allowRemoteHttp: "1"
+  applyPatches: false
+  inProcessAdmin:
+    enabled: true
+    port: 8080
+  livenessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 1
+  readinessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    successThreshold: 1
+    tcpSocket:
+      port: 8000
+    timeoutSeconds: 1
+  # Verbatim: this tenant mounts the patch ConfigMap at /opt/patches and
+  # lists it LAST, which no rule in the chart derives.
+  volumeMountsOverride:
+    - mountPath: /app/odoo_mcp_policy.json
+      name: policy
+      subPath: odoo_mcp_policy.json
+    - mountPath: /opt/patches
+      name: patch-script
+      readOnly: true
+    - mountPath: /data
+      name: data
+  volumesOverride:
+    - configMap:
+        defaultMode: 420
+        name: mcp-odoo-policy
+      name: policy
+    - configMap:
+        defaultMode: 420
+        name: mcp-odoo-patch
+      name: patch-script
+    - configMap:
+        defaultMode: 420
+        name: mcp-admin-config
+      name: config-src
+    - emptyDir: {}
+      name: data
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-09-05T00:33:17+08:00"
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+
+policy:
+  enabled: true
+  mountPath: /app/odoo_mcp_policy.json
+  allowedSideEffectMethods:
+    - sale.order.action_confirm
+    - sale.order.action_cancel
+    - sale.order.action_draft
+    - sale.order.action_quotation_sent
+    - sale.order.action_quotation_send
+    - sale.order.action_lock
+    - sale.order.action_unlock
+    - sale.order.action_preview_sale_order
+    - sale.order.create_invoices
+    - stock.picking.button_validate
+    - stock.picking.action_cancel
+    - stock.quant.action_apply_inventory
+    - account.move.action_post
+    - account.move.button_draft
+    - account.move.button_cancel
+    - pos.session.action_pos_session_closing_control
+    - pos.session.open_frontend_cb
+    - loyalty.card.action_archive
+    - ir.module.module.button_immediate_install
+    - ir.module.module.button_immediate_uninstall
+    - res.users.action_reset_password
+    - product.template.action_archive
+    - product.template.action_unarchive
+
+proxy:
+  enabled: true
+  volumeName: conf
+  # the live proxy Service names its port
+  servicePortName: proxy
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 16Mi
+  readinessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    successThreshold: 1
+    tcpSocket:
+      port: 8001
+    timeoutSeconds: 1
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-07-09T14:16:13+08:00"
+
+admin:
+  enabled: true
+  mode: legacy
+  port: 8080
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  legacyInitImage: busybox
+  legacyInitPullPolicy: Always
+  legacyInitConfigMap: mcp-admin-init-config
+  legacySeedCommand: "[ -f /data/config.json ] || cp /init-config/config.json /data/config.json; [ -f /data/mcp_instructions.txt ] || cp /init-config/mcp_instructions.txt /data/mcp_instructions.txt"
+  dataFromPersistence: false
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-09-05T00:34:53+08:00"
+  service:
+    ports:
+      - name: gui
+        port: 8080
+        protocol: TCP
+        targetPort: 8080
+      - name: proxy-compat
+        port: 8001
+        protocol: TCP
+        targetPort: 8080
+
+initConfig:
+  enabled: true
+  existingConfigMap: mcp-admin-config
+  # init image: busybox:latest
+  env: []
+
+persistence:
+  enabled: true
+  emptyDir: true

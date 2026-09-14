@@ -29,6 +29,37 @@ can never move this release's own objects - see "odoo-mcp.ns".
 {{ required "baseName must not be empty" .Values.baseName }}
 {{- end -}}
 
+{{/*
+Pod selector labels. IMMUTABLE on a live Deployment: the API server rejects an
+update that changes spec.selector, so a takeover MUST render exactly what is
+already there. The standard tenants use `app: <baseName>`; the tenants whose
+MCP was deployed as part of a full Odoo stack use app.kubernetes.io/* labels
+instead, and set selectorLabels to reproduce them.
+*/}}
+{{- define "odoo-mcp.selectorLabels" -}}
+{{- if .Values.selectorLabels -}}
+{{ toYaml .Values.selectorLabels }}
+{{- else -}}
+app: {{ include "odoo-mcp.name" . }}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Labels on the POD template: the selector labels plus any extras. Must stay a
+superset of the selector or the Deployment cannot match its own pods.
+*/}}
+{{- define "odoo-mcp.podLabels" -}}
+{{ include "odoo-mcp.selectorLabels" . }}
+{{- with .Values.podLabels }}
+{{ toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{/* Service name: its own override, or the Deployment name. */}}
+{{- define "odoo-mcp.serviceName" -}}
+{{ default (include "odoo-mcp.name" .) .Values.service.name }}
+{{- end -}}
+
 {{- define "odoo-mcp.proxyName" -}}
 {{ include "odoo-mcp.name" . }}-proxy
 {{- end -}}
@@ -38,7 +69,7 @@ can never move this release's own objects - see "odoo-mcp.ns".
 {{- end -}}
 
 {{- define "odoo-mcp.policyConfigMap" -}}
-{{ include "odoo-mcp.name" . }}-policy
+{{ default (printf "%s-policy" (include "odoo-mcp.name" .)) .Values.policy.configMapName }}
 {{- end -}}
 
 {{- define "odoo-mcp.patchConfigMap" -}}
@@ -97,7 +128,16 @@ annotations:
 {{/* Container command for the MCP server: optional patch run, then the server. */}}
 {{- define "odoo-mcp.serverCommand" -}}
 {{- $args := printf "--transport %s --host 0.0.0.0 --port %v --path %s" .Values.server.transport (.Values.server.port | toString) .Values.server.path -}}
-{{- if eq (.Values.server.allowRemoteHttp | toString) "1" -}}
+{{- /*
+The CLI flag and the env var are separate facts: one live tenant sets
+MCP_ALLOW_REMOTE_HTTP=1 but does NOT pass the flag. commandAllowRemoteHttp
+defaults to following the env var and can be set to false to break that tie.
+*/ -}}
+{{- $remote := eq (.Values.server.allowRemoteHttp | toString) "1" -}}
+{{- if not (kindIs "invalid" .Values.server.commandAllowRemoteHttp) -}}
+{{- $remote = .Values.server.commandAllowRemoteHttp -}}
+{{- end -}}
+{{- if $remote -}}
 {{- $args = printf "%s --allow-remote-http" $args -}}
 {{- end -}}
 {{- if .Values.server.inProcessAdmin.enabled -}}

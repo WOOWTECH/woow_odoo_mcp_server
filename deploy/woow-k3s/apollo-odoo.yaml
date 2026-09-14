@@ -1,0 +1,95 @@
+# Instance values for the mcp-odoo release in namespace apollo-odoo.
+#
+# UNLIKE every other file here, this one is NOT a transcription of a running
+# pod. apollo's MCP server had been scaled to 0 for months and still pointed at
+# the third-party ghcr.io/tuanle96/mcp-odoo image; the owner asked for a fresh
+# deployment on the current chart instead of preserving it. So the server and
+# the proxy below are the chart's standard shape, and only three things are
+# carried over from what was there:
+#   - the Odoo connection and the allow-list settings (ODOO_MCP_ALLOW_UNKNOWN
+#     _METHODS was tightened to "0" here and stays "0"),
+#   - the existing Secret / policy / proxy ConfigMaps, which are untouched,
+#   - the admin console, which IS running and is adopted exactly as it is.
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+
+storageClassName: longhorn
+
+baseName: mcp-odoo
+
+# The WOOWTECH image lives in a private GHCR; this Secret already exists here.
+imagePullSecrets:
+  - name: mcp-admin-ghcr
+
+odoo:
+  url: http://apollo-odoo-svc:8069
+  db: apollo
+  username: admin
+  timeout: "30"
+
+secrets:
+  create: false
+  existingSecret: mcp-odoo-secrets
+  passwordKey: odoo-password
+
+server:
+  allowedHosts:
+    - apollo-mcp-odoo.woowtech.io
+    - localhost
+    - mcp-odoo-proxy.apollo-odoo.svc.cluster.local
+    - mcp-odoo.apollo-odoo.svc.cluster.local
+    - 127.0.0.1
+  # Carried over from the previous deployment: this tenant only permits the
+  # methods named in the policy file, unlike most others.
+  allowUnknownMethods: "0"
+  enableWrites: "1"
+  allowDirectWrites: "1"
+  elicitWrites: "0"
+  chatterDirect: "1"
+  maxAttachmentBytes: "16777216"
+  allowRemoteHttp: "1"
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+
+policy:
+  enabled: true
+  # The ConfigMap already exists and is shared with the console; this release
+  # mounts it rather than owning it.
+  create: false
+
+proxy:
+  enabled: true
+  config:
+    # The rendered nginx.conf contains the tunnel token, so it stays a cluster
+    # object and never enters git.
+    create: false
+    existingConfigMap: mcp-odoo-proxy-config
+
+# The console that is actually running here, adopted as-is. Moving it to the
+# chart's managed console (Secret-seeded, JWT that survives a restart) is a
+# deliberate change that costs one restart - see the README follow-ups.
+admin:
+  enabled: true
+  mode: legacy
+  port: 8080
+  legacyInitImage: busybox
+  legacyInitPullPolicy: Always
+  legacyInitConfigMap: mcp-admin-init-config
+  # Spelled out in the live pod template, so it is reproduced here.
+  serviceAccountName: default
+  legacySeedCommand: "[ -f /data/config.json ] || cp /init-config/config.json /data/config.json;\n[ -f /data/mcp_instructions.txt ] || cp /init-config/mcp_instructions.txt /data/mcp_instructions.txt\n"
+  # The console owns this RWO claim by itself. Using persistence.* instead would
+  # make the SERVER mount it too, and the two pods land on different nodes -
+  # which is exactly the Multi-Attach wedge this avoids.
+  existingClaim: mcp-admin-data
+  service:
+    name: mcp-odoo-admin-svc
+    ports:
+      - port: 8080
+        protocol: TCP
+        targetPort: 8080
+
+persistence:
+  # The MCP server itself needs no /data: everything it reads comes from env.
+  enabled: false

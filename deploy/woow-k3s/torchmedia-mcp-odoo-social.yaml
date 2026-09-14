@@ -1,0 +1,156 @@
+# Instance values for the mcp-odoo-social release in namespace torchmedia.
+# Generated from the live objects; every field was read off the cluster.
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+
+storageClassName: longhorn
+
+baseName: mcp-odoo-social
+imagePullSecrets:
+  - name: ghcr-pull
+
+service:
+  ports:
+    - name: mcp
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: admin
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+
+odoo:
+  url: https://wooooooooow.odoo.com
+  db: wooooooooow
+  username: woowtech@designsmart.com.tw
+  timeout: "30"
+  verifySsl: "1"
+
+secrets:
+  create: false
+  # This pod carries the password as a PLAIN env value. The real value is
+  # NOT here: pass it at takeover time with
+  #   --set-string secrets.plainPassword="$(kubectl -n torchmedia get deploy mcp-odoo-social \
+  #      -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ODOO_PASSWORD")].value}')"
+  plainPassword: "__ODOO_PASSWORD__"
+  existingSecret: mcp-odoo-secrets
+  passwordKey: odoo-password
+
+server:
+  envOrder:
+    - MCP_ADMIN_CONFIG
+    - ODOO_URL
+    - ODOO_DB
+    - ODOO_USERNAME
+    - ODOO_PASSWORD
+    - ODOO_TIMEOUT
+    - ODOO_VERIFY_SSL
+    - MCP_ALLOWED_HOSTS
+    - MCP_ALLOW_REMOTE_HTTP
+    - ODOO_MCP_ENABLE_WRITES
+    - ODOO_MCP_ALLOW_DIRECT_WRITES
+    - ODOO_MCP_ELICIT_WRITES
+    - ODOO_MCP_ALLOW_UNKNOWN_METHODS
+    - MCP_CHATTER_DIRECT
+    - ODOO_MCP_MAX_ATTACHMENT_BYTES
+    - ODOO_MCP_POLICY_FILE
+  allowedHosts:
+    - torchmedia-social-mcp-odoo.woowtech.io
+    - localhost
+    - 127.0.0.1
+    - mcp-odoo-social-proxy.torchmedia.svc.cluster.local
+    - mcp-odoo-social.torchmedia.svc.cluster.local
+  enableWrites: "1"
+  allowDirectWrites: "1"
+  allowUnknownMethods: "1"
+  elicitWrites: "0"
+  maxAttachmentBytes: "16777216"
+  chatterDirect: "1"
+  allowRemoteHttp: "1"
+  applyPatches: false
+  containerName: mcp-odoo
+  ports:
+    - containerPort: 8080
+      name: admin
+    - containerPort: 8000
+      name: mcp
+  inProcessAdmin:
+    enabled: true
+    port: 8080
+  livenessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    successThreshold: 1
+    tcpSocket:
+      port: 8080
+    timeoutSeconds: 1
+  readinessProbe:
+    failureThreshold: 3
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    successThreshold: 1
+    tcpSocket:
+      port: 8080
+    timeoutSeconds: 1
+  # Verbatim: this tenant mounts the patch ConfigMap at /opt/patches and
+  # lists it LAST, which no rule in the chart derives.
+  volumeMountsOverride:
+    - mountPath: /app/odoo_mcp_policy.json
+      name: policy
+      subPath: odoo_mcp_policy.json
+    - mountPath: /data
+      name: data
+  volumesOverride:
+    - configMap:
+        defaultMode: 420
+        name: mcp-odoo-policy
+      name: policy
+    - configMap:
+        defaultMode: 420
+        name: mcp-odoo-social-admin-config
+      name: config-src
+    - name: data
+      persistentVolumeClaim:
+        claimName: mcp-odoo-social-admin-data
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-08-25T13:17:31+08:00"
+
+policy:
+  enabled: true
+  mountPath: /app/odoo_mcp_policy.json
+  # Shared with the other MCP release in this namespace, which owns it.
+  create: false
+  configMapName: mcp-odoo-policy
+
+proxy:
+  enabled: true
+  volumeName: config
+  # the live proxy Service names its port
+  servicePortName: proxy
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 16Mi
+  podAnnotations:
+    kubectl.kubernetes.io/restartedAt: "2026-08-24T17:11:14+08:00"
+
+initConfig:
+  enabled: true
+  existingConfigMap: mcp-odoo-social-admin-config
+  # A third vintage of the seed command. Carried verbatim.
+  command:
+    - sh
+    - -c
+    - if [ ! -f /data/config.json ]; then cp /config-src/config.json /data/config.json;
+      fi
+  # init image: busybox:latest
+
+persistence:
+  enabled: true
+  emptyDir: false
+  existingClaim: mcp-odoo-social-admin-data

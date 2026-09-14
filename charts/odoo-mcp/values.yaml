@@ -36,6 +36,28 @@ storageClassName: longhorn
 # Tenants that run a second MCP for another database use e.g. "mcp-odoo-social".
 baseName: mcp-odoo
 
+# Pod selector labels. IMMUTABLE on a live Deployment - the API server rejects
+# an update that changes spec.selector - so a takeover MUST set whatever is
+# already there. Empty means `app: <baseName>`, which is what the standard
+# tenants have; the tenants whose MCP was deployed as part of a full Odoo stack
+# carry app.kubernetes.io/* labels instead and set them here.
+selectorLabels: {}
+# Pod-level securityContext (the tenant-stack MCPs set fsGroup) and service
+# account token mounting. null leaves automountServiceAccountToken unset.
+podSecurityContext: {}
+automountServiceAccountToken: null
+# Extra labels on the pod template only (a superset of the selector). Unlike
+# extraLabels these ARE part of the pod template, so changing one rolls the pod.
+podLabels: {}
+
+service:
+  # Service name when it differs from baseName (the tenant-stack MCPs use
+  # <tenant>-odoo-mcp-svc).
+  name: ""
+  # Explicit port list. Empty renders the single MCP port; the sidecar shape
+  # publishes the MCP and proxy ports on this one Service.
+  ports: []
+
 # Extra labels added to every object's metadata (NOT to pod templates, so adding
 # one can never roll a running pod). Empty by default: the live objects were
 # created by kubectl apply and carry no labels, and criterion 1 compares them
@@ -83,6 +105,13 @@ secrets:
   create: false
   existingSecret: mcp-odoo-secrets
   passwordKey: odoo-password
+  # ONE live pod carries the Odoo password as a plain env value rather than a
+  # secretKeyRef. Reproducing that pod template exactly is the only way to take
+  # it over without a restart, so the chart can render it - but NEVER commit a
+  # value here. The instance file holds "__ODOO_PASSWORD__" and the real value
+  # is passed with --set-string at takeover time. Empty means secretKeyRef,
+  # which is what every other instance uses and what this one should move to.
+  plainPassword: ""
   # Only read when create=true; required() then. NEVER commit a value here.
   odooPassword: ""
   # Credentials for the admin console (admin.enabled). Same rule: the Secret
@@ -164,6 +193,28 @@ server:
   # scripts; the slot matters because volume list order is part of the template.
   extraVolumes: []
   extraVolumeMounts: []
+  # Replaces the generated start command entirely, verbatim. For the one tenant
+  # whose pod boots through an embedded Python program instead of any shape this
+  # chart models - see the comment in templates/server.yaml.
+  commandOverride: []
+  # Pass --allow-remote-http on the command line. null follows allowRemoteHttp;
+  # one live tenant sets the env var but not the flag.
+  commandAllowRemoteHttp: null
+  # Explicit container port list, when the live pod declares more than one.
+  ports: []
+  # The server container's volumeMounts / the pod's volumes, verbatim. Same
+  # reasoning as commandOverride - see templates/server.yaml. Setting either
+  # means the chart derives nothing for that list.
+  volumeMountsOverride: []
+  volumesOverride: []
+  # Container name. Defaults to baseName, which is `mcp-odoo` for the standard
+  # tenants - but the tenant-stack MCPs have a Deployment called
+  # <tenant>-mcp-odoo whose container is still plain `mcp-odoo`.
+  containerName: ""
+  # Name on the container port, when the live pod names it.
+  portName: ""
+  securityContext: {}
+  startupProbe: {}
   # Probes on the MCP server container. Empty by default because most live
   # tenants have none; the ones that do carry a tcpSocket check on server.port
   # and it is part of their pod template, so a takeover has to reproduce it.
@@ -182,7 +233,15 @@ server:
 # MEMORY "Odoo MCP 副作用閘門".
 policy:
   enabled: true
+  # Render the ConfigMap, or only mount one that already exists. false when two
+  # MCP releases in one namespace share a single policy file.
+  create: true
   mountPath: /app/odoo_mcp_policy.json
+  # Volume name and ConfigMap name. The tenant-stack MCPs call them
+  # `mcp-policy` / `<tenant>-odoo-mcp-policy` and mount the file read-only.
+  volumeName: policy
+  configMapName: ""
+  readOnly: false
   allowedSideEffectMethods:
     - sale.order.action_confirm
     - sale.order.action_cancel
@@ -212,8 +271,10 @@ persistence:
   # survive a restart. No PVC is rendered when this is true.
   emptyDir: false
   # Name of the PVC. Kept separate from baseName: the live claim is
-  # "mcp-admin-data" in every tenant.
+  # "mcp-admin-data" in most tenants.
   name: mcp-admin-data
+  # Name of the VOLUME inside the pod (not the claim). Part of the pod template.
+  volumeName: data
   # Bind to a PVC that already exists instead of rendering one.
   existingClaim: ""
   accessMode: ReadWriteOnce
@@ -240,6 +301,15 @@ initConfig:
   # historical single ODOO_MCP_ALLOW_UNKNOWN_METHODS var; set `[]` for tenants
   # whose init container has no env at all; set an explicit list otherwise.
   env: null
+  # Raw seed command, replacing the generated `cp`. For tenants whose init
+  # container copies more than config.json, or checks for the files first.
+  command: []
+  # Volume that carries the seed files, and where it is mounted.
+  sourceVolumeName: config-src
+  sourceMountPath: /config-src
+  # One tenant lists /data before the seed volume, in both the init container's
+  # mounts and the pod's volume list. Order is part of the pod template.
+  dataFirst: false
 
 proxy:
   # nginx in front of the MCP server: only /private_<token>/... is proxied,
@@ -272,25 +342,74 @@ proxy:
     limits:
       cpu: 100m
       memory: 64Mi
+  # Where the nginx token gate runs:
+  #   deployment - its own Deployment and Service (the standard tenants)
+  #   sidecar    - a second container in the MCP pod, with both ports published
+  #                on the MCP Service (the tenants whose MCP was deployed as
+  #                part of a full Odoo stack)
+  mode: deployment
+  containerName: mcp-odoo-proxy
+  # Name on the container port, when the live pod names it.
+  portName: ""
   # The name of the nginx.conf volume inside the pod. Purely cosmetic, but it
-  # is part of the live pod template and two vintages exist across tenants
-  # (`config` and the older `conf`), so it has to be selectable to take a
-  # tenant over without rolling its pod.
+  # is part of the live pod template and several vintages exist across tenants
+  # (`config`, the older `conf`, and `mcp-proxy-config`/`nginx-config` in the
+  # sidecar shape), so it has to be selectable to take a tenant over without
+  # rolling its pod.
   volumeName: config
+  # sidecar mode only: nginx:alpine needs writable /var/cache/nginx and /var/run.
+  cacheVolumeName: mcp-proxy-cache
+  runVolumeName: mcp-proxy-run
+  # Env on the nginx container. Inert (nginx reads none of it) but part of the
+  # live pod template, and the sets differ per tenant.
+  env: []
+  livenessProbe: {}
   # Some tenants' proxies carry a tcpSocket readiness check, some don't.
   readinessProbe: {}
-  # Overrides the top-level nodeSelector for the proxy only. One tenant pins
-  # the proxy to the control-plane node while leaving its server unpinned.
-  nodeSelector: {}
+  # Name on the proxy Service's port, when the live Service names it.
+  servicePortName: ""
+  # Overrides the top-level nodeSelector for the proxy only. null inherits; an
+  # explicit {} means this pod has none. Both directions occur live.
+  nodeSelector: null
 
 # FastAPI admin console + MCP token proxy from this repo (port 8080). Off by
 # default: most tenants run the MCP server only. When enabled, /data must be
 # persistent or every restart reverts the console password and MCP token.
 admin:
   enabled: false
+  # Which console this renders:
+  #   managed - the one in this repo: seeds /data from a Secret with setdefault,
+  #             mounts no ServiceAccount, JWT_SECRET survives a restart.
+  #   legacy  - the hand-written console three tenants are running today, seeded
+  #             from a ConfigMap by busybox. Reproduced exactly so those three
+  #             can be taken over without a restart; moving them to `managed` is
+  #             a deliberate, scheduled change.
+  mode: managed
+  # legacy only. The seed command is carried verbatim because its whitespace is
+  # part of the live pod template.
+  legacyInitImage: busybox
+  legacyInitPullPolicy: Always
+  legacyInitConfigMap: ""
+  legacySeedCommand: "[ -f /data/config.json ] || cp /init-config/config.json /data/config.json; [ -f /data/mcp_instructions.txt ] || cp /init-config/mcp_instructions.txt /data/mcp_instructions.txt"
+  # One live console has serviceAccountName spelled out in its pod template.
+  # Empty leaves the field unset (the API server then defaults it).
+  serviceAccountName: ""
+  # Overrides the top-level nodeSelector for the console only. null inherits;
+  # an explicit {} means this pod has none (several live consoles are unpinned
+  # while their server is pinned to the control-plane node).
+  nodeSelector: null
+  service:
+    # Name and port list when they differ from the defaults: two live consoles
+    # publish a second port that forwards the MCP proxy.
+    name: ""
+    ports: []
   replicas: 1
   port: 8080
   podAnnotations: {}
+  # A claim for the console ALONE. Unlike dataFromPersistence this does not make
+  # the server mount it, which matters because the claim is ReadWriteOnce: two
+  # pods on different nodes cannot both attach it.
+  existingClaim: ""
   # Share the server's /data claim (persistence.*). Off by default: the claim is
   # ReadWriteOnce, so the console and the server would have to land on the same
   # node. With it off the console uses an emptyDir - which is what the live

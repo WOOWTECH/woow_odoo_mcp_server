@@ -1,0 +1,130 @@
+# Instance values for puhsu-mcp-odoo in namespace puhsu-odoo.
+#
+# THIS TENANT IS THE ODD ONE OUT. Its MCP pod is config-driven: the container
+# gets no Odoo env at all, every setting comes from /data/config.json (which the
+# admin console writes), and it boots through a Python program embedded in the
+# pod spec that reads that file, starts odoo-mcp in the background and execs
+# uvicorn. None of that is a shape this chart models, so the command and the
+# init-container command are carried here VERBATIM as data. Taking the object
+# over without restarting it is the only goal; do not 'tidy' these strings.
+#
+# SAFETY: never set `namespace:` here - placement is `-n` only.
+# SAFETY: selectorLabels is IMMUTABLE on a live Deployment.
+
+storageClassName: longhorn
+
+baseName: puhsu-mcp-odoo
+selectorLabels:
+  app.kubernetes.io/name: "mcp-odoo"
+  app.kubernetes.io/part-of: "puhsu"
+
+service:
+  name: puhsu-odoo-mcp-svc
+  ports:
+    - name: proxy
+      port: 8001
+      protocol: TCP
+      targetPort: 8080
+
+# Not used by this instance: the container reads connection details from
+# config.json, not from env. They are only here because the chart requires them.
+odoo:
+  url: https://puhsu-odoo.woowtech.io
+  db: puhsu
+  username: admin
+
+secrets:
+  create: false
+  existingSecret: mcp-odoo-secrets
+  passwordKey: odoo-password
+
+server:
+  # Verbatim from the live pod. See the header.
+  commandOverride:
+    - python3
+    - -c
+    - "import json,os,subprocess\ncfg=json.load(open(os.environ.get('MCP_ADMIN_CONFIG','/data/config.json')))\n\
+      m=cfg.get('mcp_server',{}) or {}\nc=cfg.get('connection',{}) or {}\nenv=dict(os.environ)\n\
+      for s,d in (('odoo_url','ODOO_URL'),('odoo_db','ODOO_DB'),('odoo_username','ODOO_USERNAME'),('odoo_password','ODOO_PASSWORD')):\n\
+      \    v=c.get(s)\n    if v: env[d]=str(v)\nenv.update({k:str(v) for k,v in (m.get('env')\
+      \ or {}).items()})\nargs=m.get('args') or ['--transport','streamable-http','--host','0.0.0.0','--port','8000','--path','/mcp']\n\
+      if '--allow-remote-http' not in args: args=args+['--allow-remote-http']\nsubprocess.Popen(['odoo-mcp']+args,env=env)\n\
+      os.execvp('uvicorn',['uvicorn','odoo_mcp_admin.main:app','--host','0.0.0.0','--port','8080'])\n"
+  envOrder:
+    - MCP_ADMIN_CONFIG
+  # Only reached through allowedHosts' required() guard - the rendered
+  # MCP_ALLOWED_HOSTS is not in envOrder, so it is never emitted.
+  allowedHosts:
+    - puhsu-mcp-odoo.woowtech.io
+  port: 8080
+  portName: mcp-admin
+  containerName: mcp-odoo
+  applyPatches: false
+  livenessProbe:
+    failureThreshold: 3
+    httpGet:
+      path: /healthz
+      port: 8080
+      scheme: HTTP
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    successThreshold: 1
+    timeoutSeconds: 1
+  readinessProbe:
+    failureThreshold: 3
+    httpGet:
+      path: /healthz
+      port: 8080
+      scheme: HTTP
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+
+policy:
+  enabled: false
+
+proxy:
+  # No nginx gate at all for this tenant: the Service maps 8001 straight
+  # to the admin port on the pod.
+  enabled: false
+
+busybox:
+  image: busybox:1.36
+  # A pinned tag, so the live pod does not re-pull on every start.
+  pullPolicy: IfNotPresent
+
+initConfig:
+  enabled: true
+  existingConfigMap: puhsu-mcp-init-config
+  sourceVolumeName: init-config
+  sourceMountPath: /init-config
+  dataFirst: true
+  # Verbatim: it seeds two files, and only if they are missing.
+  command:
+    - sh
+    - -c
+    - '[ -f /data/config.json ] || cp /init-config/config.json /data/config.json
+    
+      [ -f /data/mcp_instructions.txt ] || cp /init-config/mcp_instructions.txt /data/mcp_instructions.txt
+    
+      ls -la /data
+    
+      '
+  env: []
+
+persistence:
+  enabled: true
+  emptyDir: false
+  volumeName: mcp-data
+  existingClaim: puhsu-mcp-data
